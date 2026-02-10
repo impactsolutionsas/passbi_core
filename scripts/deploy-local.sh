@@ -15,17 +15,17 @@ fi
 # Stop existing containers
 echo ""
 echo "🛑 Arrêt des conteneurs existants..."
-docker-compose down
+docker compose down
 
 # Build images
 echo ""
 echo "🔨 Build des images Docker..."
-docker-compose build --no-cache
+docker compose build --no-cache
 
 # Start services
 echo ""
 echo "🚀 Démarrage des services..."
-docker-compose up -d
+docker compose up -d
 
 # Wait for services to be healthy
 echo ""
@@ -35,12 +35,12 @@ sleep 5
 # Check health
 echo ""
 echo "🏥 Vérification de la santé..."
-docker-compose ps
+docker compose ps
 
 # Run migrations
 echo ""
 echo "📊 Application des migrations..."
-docker-compose exec -T postgres psql -U passbi_user -d passbi << 'EOF'
+docker compose exec -T postgres psql -U passbi_user -d passbi << 'EOF'
 \dt
 EOF
 
@@ -56,4 +56,4 @@ echo "🧪 Test rapide:"
 echo "   curl http://localhost:8080/health"
 echo ""
 echo "📖 Import GTFS:"
-echo "   docker-compose exec api ./passbi-import --agency-id=dakar_dem_dikk --gtfs=/app/gtfs_folder/gtfs_Dem_Dikk.zip --rebuild-graph"
+echo "   docker compose exec api ./passbi-import --agency-id=dakar_dem_dikk --gtfs=/app/gtfs_folder/gtfs_Dem_Dikk.zip --rebuild-graph"
