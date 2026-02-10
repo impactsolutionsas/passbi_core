@@ -1,0 +1,234 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/passbi/passbi_core/internal/db"
+	"github.com/passbi/passbi_core/internal/graph"
+	"github.com/passbi/passbi_core/internal/gtfs"
+	"github.com/passbi/passbi_core/internal/models"
+)
+
+func main() {
+	// Command-line flags
+	agencyID := flag.String("agency-id", "", "Agency ID for this GTFS feed (required)")
+	gtfsPath := flag.String("gtfs", "", "Path to GTFS ZIP file (required)")
+	rebuildGraph := flag.Bool("rebuild-graph", false, "Rebuild graph after import")
+	dedupeThreshold := flag.Float64("dedupe-threshold", 30.0, "Stop deduplication threshold in meters")
+
+	flag.Parse()
+
+	// Validate required flags
+	if *agencyID == "" || *gtfsPath == "" {
+		fmt.Println("Usage: passbi-import --agency-id=<id> --gtfs=<path.zip> [--rebuild-graph] [--dedupe-threshold=30]")
+		flag.PrintDefaults()
+		os.Exit(1)
+	}
+
+	// Validate file exists
+	if _, err := os.Stat(*gtfsPath); os.IsNotExist(err) {
+		log.Fatalf("GTFS file not found: %s", *gtfsPath)
+	}
+
+	log.Println("Starting GTFS import...")
+	log.Printf("Agency ID: %s", *agencyID)
+	log.Printf("GTFS file: %s", *gtfsPath)
+
+	// Initialize database connection
+	pool, err := db.GetDB()
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Create import log entry
+	importLogID, err := createImportLog(ctx, pool, *agencyID)
+	if err != nil {
+		log.Fatalf("Failed to create import log: %v", err)
+	}
+
+	// Run import in transaction
+	if err := runImport(ctx, pool, *agencyID, *gtfsPath, *dedupeThreshold, *rebuildGraph, importLogID); err != nil {
+		// Update log as failed
+		updateImportLog(ctx, pool, importLogID, "failed", 0, 0, 0, 0, err.Error())
+		log.Fatalf("Import failed: %v", err)
+	}
+
+	log.Println("Import completed successfully!")
+	os.Exit(0)
+}
+
+func runImport(ctx context.Context, pool *pgxpool.Pool, agencyID, gtfsPath string, dedupeThreshold float64, rebuildGraph bool, logID int64) error {
+	startTime := time.Now()
+
+	// Parse GTFS feed
+	log.Println("Step 1/5: Parsing GTFS feed...")
+	feed, err := gtfs.ParseGTFSZip(gtfsPath)
+	if err != nil {
+		return fmt.Errorf("failed to parse GTFS: %w", err)
+	}
+
+	// Validate and clean stops
+	log.Println("Step 2/5: Validating and cleaning stops...")
+	feed.Stops = gtfs.ValidateAndCleanStops(feed.Stops)
+
+	// Deduplicate stops
+	log.Println("Step 3/5: Deduplicating stops...")
+	var stopMapping map[string]string
+	feed.Stops, stopMapping, err = gtfs.DeduplicateStops(ctx, pool, feed.Stops, dedupeThreshold)
+	if err != nil {
+		return fmt.Errorf("failed to deduplicate stops: %w", err)
+	}
+
+	// Remap stop IDs in stop_times to use deduplicated stops
+	for i := range feed.StopTimes {
+		if newID, ok := stopMapping[feed.StopTimes[i].StopID]; ok {
+			feed.StopTimes[i].StopID = newID
+		}
+	}
+
+	// Begin transaction
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Import stops
+	log.Println("Step 4/5: Importing stops and routes to database...")
+	if err := importStops(ctx, tx, feed.Stops); err != nil {
+		return fmt.Errorf("failed to import stops: %w", err)
+	}
+
+	// Import routes
+	if err := importRoutes(ctx, tx, agencyID, feed.Routes); err != nil {
+		return fmt.Errorf("failed to import routes: %w", err)
+	}
+
+	// Commit transaction
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	// Build graph (if requested)
+	nodeCount := 0
+	edgeCount := 0
+
+	if rebuildGraph {
+		log.Println("Step 5/5: Building routing graph...")
+		builder := graph.NewBuilder(pool)
+		if err := builder.BuildGraph(ctx, feed); err != nil {
+			return fmt.Errorf("failed to build graph: %w", err)
+		}
+
+		// Count nodes and edges
+		if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM node").Scan(&nodeCount); err != nil {
+			log.Printf("Warning: failed to count nodes: %v", err)
+		}
+		if err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM edge").Scan(&edgeCount); err != nil {
+			log.Printf("Warning: failed to count edges: %v", err)
+		}
+	} else {
+		log.Println("Step 5/5: Skipping graph build (use --rebuild-graph to enable)")
+	}
+
+	// Update import log
+	duration := time.Since(startTime)
+	log.Printf("Import completed in %s", duration)
+
+	return updateImportLog(ctx, pool, logID, "success",
+		len(feed.Stops), len(feed.Routes), nodeCount, edgeCount, "")
+}
+
+func createImportLog(ctx context.Context, pool *pgxpool.Pool, agencyID string) (int64, error) {
+	var id int64
+	err := pool.QueryRow(ctx, `
+		INSERT INTO import_log (agency_id, status)
+		VALUES ($1, 'running')
+		RETURNING id
+	`, agencyID).Scan(&id)
+
+	return id, err
+}
+
+func updateImportLog(ctx context.Context, pool *pgxpool.Pool, id int64, status string, stops, routes, nodes, edges int, errMsg string) error {
+	_, err := pool.Exec(ctx, `
+		UPDATE import_log
+		SET completed_at = NOW(),
+		    status = $2,
+		    stops_count = $3,
+		    routes_count = $4,
+		    nodes_count = $5,
+		    edges_count = $6,
+		    error_message = $7
+		WHERE id = $1
+	`, id, status, stops, routes, nodes, edges, errMsg)
+
+	return err
+}
+
+func importStops(ctx context.Context, tx pgx.Tx, stops []models.GTFSStop) error {
+	batch := &pgx.Batch{}
+
+	for _, stop := range stops {
+		batch.Queue(`
+			INSERT INTO stop (id, name, lat, lon)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (id) DO UPDATE
+			SET name = EXCLUDED.name,
+			    lat = EXCLUDED.lat,
+			    lon = EXCLUDED.lon
+		`, stop.StopID, stop.StopName, stop.Lat, stop.Lon)
+	}
+
+	results := tx.SendBatch(ctx, batch)
+	defer results.Close()
+
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := results.Exec(); err != nil {
+			return fmt.Errorf("failed to insert stop %d: %w", i, err)
+		}
+	}
+
+	log.Printf("Imported %d stops", len(stops))
+	return nil
+}
+
+func importRoutes(ctx context.Context, tx pgx.Tx, agencyID string, routes []models.GTFSRoute) error {
+	batch := &pgx.Batch{}
+
+	for _, route := range routes {
+		mode := gtfs.InferMode(route)
+
+		batch.Queue(`
+			INSERT INTO route (id, agency_id, short_name, long_name, mode)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (id) DO UPDATE
+			SET agency_id = EXCLUDED.agency_id,
+			    short_name = EXCLUDED.short_name,
+			    long_name = EXCLUDED.long_name,
+			    mode = EXCLUDED.mode
+		`, route.RouteID, agencyID, route.ShortName, route.LongName, mode)
+	}
+
+	results := tx.SendBatch(ctx, batch)
+	defer results.Close()
+
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := results.Exec(); err != nil {
+			return fmt.Errorf("failed to insert route %d: %w", i, err)
+		}
+	}
+
+	log.Printf("Imported %d routes", len(routes))
+	return nil
+}

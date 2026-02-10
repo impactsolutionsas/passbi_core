@@ -1,0 +1,43 @@
+# Production override for Supabase deployment
+version: '3.8'
+
+services:
+  # Remove local postgres in production (use Supabase)
+  postgres:
+    profiles:
+      - local-only
+
+  # Keep Redis or use cloud Redis (Upstash)
+  redis:
+    image: redis:7-alpine
+    command: redis-server --requirepass ${REDIS_PASSWORD:-}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+
+  # API with Supabase connection
+  api:
+    environment:
+      DB_HOST: db.xlvuggzprjjkzolonbuh.supabase.co
+      DB_PORT: 5432
+      DB_NAME: postgres
+      DB_USER: postgres
+      DB_PASSWORD: ${SUPABASE_PASSWORD}
+      DB_SSLMODE: require
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      API_PORT: 8080
+      CACHE_TTL: 10m
+      MAX_EXPLORED_NODES: 50000
+      ROUTE_TIMEOUT: 10s
+    depends_on:
+      - redis
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
