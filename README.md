@@ -112,6 +112,25 @@ curl "http://localhost:8080/v2/route-search?from=14.7167,-17.4677&to=14.6928,-17
 
 ---
 
+## 📖 API Documentation
+
+**For developers integrating PassBi API into their applications:**
+
+- **[🚀 5-Minute Quickstart](docs/guides/quickstart-integration.md)** - Get started in 5 minutes
+- **[📘 Complete Integration Guide](docs/guides/integration-guide.md)** - Full integration tutorial
+- **[🎯 Routing Strategies Explained](docs/guides/routing-strategies.md)** - Understanding the algorithms
+- **[📚 Full API Documentation](docs/README.md)** - Complete documentation hub
+
+**Quick Links:**
+- [OpenAPI Specification](docs/api/openapi.yaml) - Machine-readable API spec
+- [JavaScript Examples](docs/api/examples/javascript.md) - Code examples for web/Node.js
+- [Python Examples](docs/api/examples/python.md) - Code examples for Python
+- [cURL Examples](docs/api/examples/curl.md) - Command-line testing
+- [Error Reference](docs/api/reference/errors.md) - Error codes and troubleshooting
+- [Data Models](docs/api/reference/data-models.md) - Complete data structures
+
+---
+
 ## API Reference
 
 ### `GET /v2/route-search`
