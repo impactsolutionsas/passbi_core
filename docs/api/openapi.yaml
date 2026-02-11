@@ -701,7 +701,7 @@ components:
         error:
           type: string
           description: Human-readable error message
-          example: missing required parameters: from and to
+          example: "missing required parameters: from and to"
 
   parameters:
     FromCoordinates:
