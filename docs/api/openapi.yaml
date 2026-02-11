@@ -1,0 +1,761 @@
+openapi: 3.0.3
+info:
+  title: PassBi Core API
+  version: 2.0.0
+  description: |
+    PassBi is a fast, robust multimodal transit routing engine designed for West African transit data.
+
+    ## Features
+    - **Multi-strategy routing**: Returns 4 route options optimized for different user preferences
+    - **Geospatial search**: Find nearby transit stops within a specified radius
+    - **Route catalog**: Browse all available transit routes with filtering
+    - **High performance**: Sub-500ms P95 response times with Redis caching
+    - **GTFS-powered**: Built on standard GTFS data format
+
+    ## Routing Strategies
+
+    PassBi computes 4 different routing strategies in parallel:
+
+    - **no_transfer**: Zero transfers, single line only (maximum comfort)
+    - **direct**: Minimize or eliminate transfers (simplicity focused)
+    - **simple**: Balance time, walking, and transfers (recommended default)
+    - **fast**: Minimize total travel time (speed focused)
+
+  contact:
+    name: PassBi Support
+    url: https://github.com/passbi/passbi_core
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  - url: https://api.passbi.com
+    description: Production (example)
+
+tags:
+  - name: Routing
+    description: Route search and journey planning
+  - name: Stops
+    description: Transit stop information
+  - name: Routes
+    description: Transit route catalog
+  - name: System
+    description: System health and status
+
+paths:
+  /health:
+    get:
+      summary: Health Check
+      description: Check the health status of the API and its dependencies (database, cache).
+      operationId: healthCheck
+      tags:
+        - System
+      responses:
+        '200':
+          description: System is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                healthy:
+                  summary: All systems operational
+                  value:
+                    status: healthy
+                    checks:
+                      database: ok
+                      redis: ok
+        '503':
+          description: System is unhealthy - one or more dependencies are down
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                unhealthy:
+                  summary: Database connection failed
+                  value:
+                    status: unhealthy
+                    checks:
+                      database: "connection refused"
+                      redis: ok
+
+  /v2/route-search:
+    get:
+      summary: Search Routes
+      description: |
+        Find optimal routes between two coordinates using multiple strategies.
+
+        Returns up to 4 different route options, each optimized for different criteria:
+        - `no_transfer`: Zero transfers (single line only)
+        - `direct`: Minimal transfers
+        - `simple`: Balanced approach (recommended)
+        - `fast`: Fastest total time
+
+        **Note**: If a strategy cannot find a route, it will be omitted from the response.
+        If no strategies find a route, a 404 error is returned.
+      operationId: searchRoute
+      tags:
+        - Routing
+      parameters:
+        - name: from
+          in: query
+          required: true
+          description: Origin coordinates in "latitude,longitude" format
+          schema:
+            type: string
+            pattern: '^-?\d+\.?\d*,-?\d+\.?\d*$'
+            example: "14.7167,-17.4677"
+          examples:
+            dakar_pointA:
+              summary: Dakar Point A
+              value: "14.7167,-17.4677"
+            dakar_gare:
+              summary: Gare Routière Dakar
+              value: "14.6928,-17.4467"
+        - name: to
+          in: query
+          required: true
+          description: Destination coordinates in "latitude,longitude" format
+          schema:
+            type: string
+            pattern: '^-?\d+\.?\d*,-?\d+\.?\d*$'
+            example: "14.6928,-17.4467"
+          examples:
+            dakar_center:
+              summary: Dakar Center
+              value: "14.6928,-17.4467"
+            plateau:
+              summary: Plateau
+              value: "14.6928,-17.4400"
+      responses:
+        '200':
+          description: Routes found successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteSearchResponse'
+              examples:
+                allStrategies:
+                  summary: All 4 strategies found routes
+                  value:
+                    routes:
+                      no_transfer:
+                        duration_seconds: 1800
+                        walk_distance_meters: 200
+                        transfers: 0
+                        steps:
+                          - type: WALK
+                            from_stop: origin
+                            to_stop: D_123
+                            from_stop_name: Your Location
+                            to_stop_name: Gare Routière
+                            duration_seconds: 140
+                            distance_meters: 200
+                          - type: RIDE
+                            from_stop: D_123
+                            to_stop: D_456
+                            from_stop_name: Gare Routière
+                            to_stop_name: Place de l'Indépendance
+                            route: DDD_01
+                            route_name: D1LP
+                            mode: BUS
+                            duration_seconds: 1620
+                            num_stops: 15
+                          - type: WALK
+                            from_stop: D_456
+                            to_stop: destination
+                            from_stop_name: Place de l'Indépendance
+                            to_stop_name: Destination
+                            duration_seconds: 40
+                            distance_meters: 50
+                      direct:
+                        duration_seconds: 1200
+                        walk_distance_meters: 350
+                        transfers: 0
+                        steps: []
+                      simple:
+                        duration_seconds: 900
+                        walk_distance_meters: 450
+                        transfers: 1
+                        steps: []
+                      fast:
+                        duration_seconds: 720
+                        walk_distance_meters: 600
+                        transfers: 2
+                        steps: []
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingParams:
+                  summary: Missing required parameters
+                  value:
+                    error: "missing required parameters: from and to"
+                invalidFormat:
+                  summary: Invalid coordinate format
+                  value:
+                    error: "invalid 'from' coordinates: expected format: lat,lon"
+                outOfRange:
+                  summary: Coordinates out of valid range
+                  value:
+                    error: "invalid 'from' coordinates: latitude must be between -90 and 90"
+        '404':
+          description: No routes found between the specified locations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                noRoutes:
+                  summary: No routes available
+                  value:
+                    error: "no routes found between the specified locations"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                serverError:
+                  summary: Database or cache error
+                  value:
+                    error: "internal server error"
+
+  /v2/stops/nearby:
+    get:
+      summary: Find Nearby Stops
+      description: |
+        Find all transit stops within a specified radius of a location.
+
+        Returns up to 20 stops, ordered by distance from the query point.
+        Each stop includes the list of routes that serve it.
+      operationId: findNearbyStops
+      tags:
+        - Stops
+      parameters:
+        - name: lat
+          in: query
+          required: true
+          description: Latitude of the search center
+          schema:
+            type: number
+            format: double
+            minimum: -90
+            maximum: 90
+            example: 14.6928
+        - name: lon
+          in: query
+          required: true
+          description: Longitude of the search center
+          schema:
+            type: number
+            format: double
+            minimum: -180
+            maximum: 180
+            example: -17.4467
+        - name: radius
+          in: query
+          required: false
+          description: Search radius in meters
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 5000
+            default: 500
+            example: 500
+      responses:
+        '200':
+          description: Nearby stops found successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NearbyStopsResponse'
+              examples:
+                multipleStops:
+                  summary: Multiple stops found
+                  value:
+                    stops:
+                      - id: D_771
+                        name: Face Eglise Temple Évangélique
+                        lat: 14.692267
+                        lon: -17.447672
+                        distance_meters: 120
+                        routes:
+                          - D105CP
+                          - D111LY
+                          - D7OP
+                        routes_count: 3
+                      - id: D_772
+                        name: Marché Kermel
+                        lat: 14.692567
+                        lon: -17.448012
+                        distance_meters: 250
+                        routes:
+                          - D1LP
+                          - D5TH
+                        routes_count: 2
+                noStops:
+                  summary: No stops found in radius
+                  value:
+                    stops: []
+        '400':
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingParams:
+                  summary: Missing latitude or longitude
+                  value:
+                    error: "missing required parameters: lat and lon"
+                invalidRadius:
+                  summary: Radius out of range
+                  value:
+                    error: "invalid radius (must be between 0 and 5000 meters)"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v2/routes/list:
+    get:
+      summary: List All Routes
+      description: |
+        Get a list of all available transit routes with optional filtering.
+
+        Supports filtering by:
+        - Mode (BUS, BRT, TER, FERRY, TRAM)
+        - Agency ID
+
+        Results can be limited (default: 100, max: 1000).
+      operationId: listRoutes
+      tags:
+        - Routes
+      parameters:
+        - name: mode
+          in: query
+          required: false
+          description: Filter by transit mode
+          schema:
+            type: string
+            enum:
+              - BUS
+              - BRT
+              - TER
+              - FERRY
+              - TRAM
+            example: BUS
+        - name: agency
+          in: query
+          required: false
+          description: Filter by agency ID
+          schema:
+            type: string
+            example: dakar_dem_dikk
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of routes to return
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+            example: 10
+      responses:
+        '200':
+          description: Routes list retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutesListResponse'
+              examples:
+                busRoutes:
+                  summary: List of bus routes
+                  value:
+                    routes:
+                      - id: DDD_01
+                        name: D1LP
+                        mode: BUS
+                        agency_id: dakar_dem_dikk
+                        stops_count: 75
+                      - id: DDD_05
+                        name: D5TH
+                        mode: BUS
+                        agency_id: dakar_dem_dikk
+                        stops_count: 48
+                      - id: DDD_07
+                        name: D7OP
+                        mode: BUS
+                        agency_id: dakar_dem_dikk
+                        stops_count: 62
+                    total: 134
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    RouteSearchResponse:
+      type: object
+      description: Response containing multiple route options optimized by different strategies
+      properties:
+        routes:
+          type: object
+          description: Map of strategy names to route results
+          properties:
+            no_transfer:
+              $ref: '#/components/schemas/RouteResult'
+            direct:
+              $ref: '#/components/schemas/RouteResult'
+            simple:
+              $ref: '#/components/schemas/RouteResult'
+            fast:
+              $ref: '#/components/schemas/RouteResult'
+          example:
+            simple:
+              duration_seconds: 900
+              walk_distance_meters: 300
+              transfers: 1
+              steps: []
+
+    RouteResult:
+      type: object
+      required:
+        - duration_seconds
+        - walk_distance_meters
+        - transfers
+        - steps
+      description: A single route option with complete journey details
+      properties:
+        duration_seconds:
+          type: integer
+          description: Total journey duration in seconds (includes walking, waiting, and riding)
+          example: 1200
+          minimum: 0
+        walk_distance_meters:
+          type: integer
+          description: Total walking distance in meters across all walk segments
+          example: 350
+          minimum: 0
+        transfers:
+          type: integer
+          description: Number of transfers required (changing from one route to another)
+          example: 1
+          minimum: 0
+        steps:
+          type: array
+          description: Ordered list of journey segments (walk, ride, transfer)
+          items:
+            $ref: '#/components/schemas/Step'
+
+    Step:
+      type: object
+      required:
+        - type
+        - from_stop
+        - to_stop
+        - from_stop_name
+        - to_stop_name
+        - duration_seconds
+      description: A single segment of a journey (walking, riding, or transferring)
+      properties:
+        type:
+          type: string
+          enum:
+            - WALK
+            - RIDE
+            - TRANSFER
+          description: |
+            Type of step:
+            - WALK: Walking between stops
+            - RIDE: Riding a transit vehicle
+            - TRANSFER: Transferring between routes at the same stop
+          example: RIDE
+        from_stop:
+          type: string
+          description: Origin stop ID
+          example: D_123
+        to_stop:
+          type: string
+          description: Destination stop ID
+          example: D_456
+        from_stop_name:
+          type: string
+          description: Human-readable origin stop name
+          example: Gare Routière
+        to_stop_name:
+          type: string
+          description: Human-readable destination stop name
+          example: Place de l'Indépendance
+        route:
+          type: string
+          nullable: true
+          description: Route ID (only present for RIDE steps)
+          example: DDD_01
+        route_name:
+          type: string
+          nullable: true
+          description: Human-readable route name/number (only present for RIDE steps)
+          example: D1LP
+        mode:
+          type: string
+          enum:
+            - BUS
+            - BRT
+            - TER
+            - FERRY
+            - TRAM
+          nullable: true
+          description: Transit mode (only present for RIDE steps)
+          example: BUS
+        duration_seconds:
+          type: integer
+          description: Duration of this step in seconds
+          example: 900
+          minimum: 0
+        distance_meters:
+          type: integer
+          nullable: true
+          description: Walking distance in meters (only present for WALK steps)
+          example: 250
+          minimum: 0
+        num_stops:
+          type: integer
+          nullable: true
+          description: Number of stops traversed (only present for RIDE steps)
+          example: 12
+          minimum: 1
+
+    NearbyStopsResponse:
+      type: object
+      required:
+        - stops
+      description: Response containing nearby transit stops
+      properties:
+        stops:
+          type: array
+          description: List of stops within the search radius, ordered by distance
+          items:
+            $ref: '#/components/schemas/NearbyStop'
+
+    NearbyStop:
+      type: object
+      required:
+        - id
+        - name
+        - lat
+        - lon
+        - distance_meters
+        - routes
+        - routes_count
+      description: A transit stop with its location and serving routes
+      properties:
+        id:
+          type: string
+          description: Unique stop identifier
+          example: D_771
+        name:
+          type: string
+          description: Human-readable stop name
+          example: Face Eglise Temple Évangélique
+        lat:
+          type: number
+          format: double
+          description: Latitude of the stop
+          example: 14.692267
+          minimum: -90
+          maximum: 90
+        lon:
+          type: number
+          format: double
+          description: Longitude of the stop
+          example: -17.447672
+          minimum: -180
+          maximum: 180
+        distance_meters:
+          type: integer
+          description: Distance from query point in meters
+          example: 120
+          minimum: 0
+        routes:
+          type: array
+          description: List of route names/numbers serving this stop
+          items:
+            type: string
+          example:
+            - D105CP
+            - D111LY
+            - D7OP
+        routes_count:
+          type: integer
+          description: Number of routes serving this stop
+          example: 3
+          minimum: 0
+
+    RoutesListResponse:
+      type: object
+      required:
+        - routes
+        - total
+      description: Response containing a list of transit routes
+      properties:
+        routes:
+          type: array
+          description: List of routes matching the filter criteria
+          items:
+            $ref: '#/components/schemas/RouteInfo'
+        total:
+          type: integer
+          description: Total number of routes returned
+          example: 134
+          minimum: 0
+
+    RouteInfo:
+      type: object
+      required:
+        - id
+        - name
+        - mode
+        - agency_id
+        - stops_count
+      description: Information about a single transit route
+      properties:
+        id:
+          type: string
+          description: Unique route identifier
+          example: DDD_01
+        name:
+          type: string
+          description: Human-readable route name/number
+          example: D1LP
+        mode:
+          type: string
+          enum:
+            - BUS
+            - BRT
+            - TER
+            - FERRY
+            - TRAM
+          description: Transit mode for this route
+          example: BUS
+        agency_id:
+          type: string
+          description: ID of the agency operating this route
+          example: dakar_dem_dikk
+        stops_count:
+          type: integer
+          description: Number of stops on this route
+          example: 75
+          minimum: 0
+
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - checks
+      description: Health status of the API and its dependencies
+      properties:
+        status:
+          type: string
+          enum:
+            - healthy
+            - unhealthy
+          description: Overall health status
+          example: healthy
+        checks:
+          type: object
+          required:
+            - database
+            - redis
+          description: Health status of individual dependencies
+          properties:
+            database:
+              type: string
+              description: Database health status ("ok" or error message)
+              example: ok
+            redis:
+              type: string
+              description: Redis cache health status ("ok" or error message)
+              example: ok
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      description: Error response format
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+          example: missing required parameters: from and to
+
+  parameters:
+    FromCoordinates:
+      name: from
+      in: query
+      required: true
+      description: Origin coordinates in "latitude,longitude" format
+      schema:
+        type: string
+        pattern: '^-?\d+\.?\d*,-?\d+\.?\d*$'
+        example: "14.7167,-17.4677"
+
+    ToCoordinates:
+      name: to
+      in: query
+      required: true
+      description: Destination coordinates in "latitude,longitude" format
+      schema:
+        type: string
+        pattern: '^-?\d+\.?\d*,-?\d+\.?\d*$'
+        example: "14.6928,-17.4467"
+
+    Latitude:
+      name: lat
+      in: query
+      required: true
+      description: Latitude
+      schema:
+        type: number
+        format: double
+        minimum: -90
+        maximum: 90
+        example: 14.6928
+
+    Longitude:
+      name: lon
+      in: query
+      required: true
+      description: Longitude
+      schema:
+        type: number
+        format: double
+        minimum: -180
+        maximum: 180
+        example: -17.4467
+
+    Radius:
+      name: radius
+      in: query
+      required: false
+      description: Search radius in meters
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 5000
+        default: 500
+        example: 500
