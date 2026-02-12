@@ -11,11 +11,11 @@ services:
     repo: https://github.com/impactsolutionsas/passbi_core
     branch: main
     envVars:
-      # Database (références automatiques au service postgres)
+      # Database (références automatiques au service postgres - Internal connection)
       - key: DB_HOST
         fromDatabase:
           name: passbi-postgres
-          property: host
+          property: hostInternal
       - key: DB_PORT
         fromDatabase:
           name: passbi-postgres
@@ -33,7 +33,7 @@ services:
           name: passbi-postgres
           property: password
       - key: DB_SSLMODE
-        value: require
+        value: disable
 
       # Redis (Redis Labs - External)
       - key: REDIS_HOST
