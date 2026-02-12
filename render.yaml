@@ -60,9 +60,9 @@ services:
       - key: TRANSFER_TIME
         value: 180
       - key: MAX_EXPLORED_NODES
-        value: 50000
+        value: 150000
       - key: ROUTE_TIMEOUT
-        value: 10s
+        value: 30s
 
     healthCheckPath: /health
 
