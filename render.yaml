@@ -1,6 +1,7 @@
 # Render Blueprint pour PassBi Core
-# Déploiement automatique : PostgreSQL + API Go
-# NOTE: Redis doit être créé manuellement dans le dashboard Render
+# Déploiement automatique : API Go
+# NOTE: PostgreSQL géré par Supabase (externe)
+# NOTE: Redis géré par Upstash (externe)
 
 services:
   # API PassBi (Application Go)
@@ -11,39 +12,31 @@ services:
     repo: https://github.com/impactsolutionsas/passbi_core
     branch: main
     envVars:
-      # Database (références automatiques au service postgres - Internal connection)
+      # Database (Supabase - External)
       - key: DB_HOST
-        fromDatabase:
-          name: passbi-postgres
-          property: hostInternal
+        value: db.xlvuggzprjjkzolonbuh.supabase.co
       - key: DB_PORT
-        fromDatabase:
-          name: passbi-postgres
-          property: port
+        value: 5432
       - key: DB_NAME
-        fromDatabase:
-          name: passbi-postgres
-          property: database
+        value: postgres
       - key: DB_USER
-        fromDatabase:
-          name: passbi-postgres
-          property: user
+        value: postgres
       - key: DB_PASSWORD
-        fromDatabase:
-          name: passbi-postgres
-          property: password
+        value: I9YyF1jg7XBuxRrQ
       - key: DB_SSLMODE
-        value: disable
+        value: require
 
-      # Redis (Redis Labs - External)
+      # Redis (Upstash - External)
       - key: REDIS_HOST
-        value: redis-13600.c339.eu-west-3-1.ec2.cloud.redislabs.com
+        value: literate-oyster-54938.upstash.io
       - key: REDIS_PORT
-        value: 13600
+        value: 6379
       - key: REDIS_PASSWORD
-        value: XQrPtCkQ3Kut00y410VcesVSu5KoJ60o
+        value: AdaaAAIncDI3MWE3NTIzNGY3ZDA0NjdjYmRhYjZlYzNhYmZjNzQ0MXAyNTQ5Mzg
       - key: REDIS_DB
         value: 0
+      - key: REDIS_TLS_ENABLED
+        value: "true"
 
       # API Configuration
       - key: API_PORT
@@ -73,13 +66,6 @@ services:
 
     healthCheckPath: /health
 
-databases:
-  # PostgreSQL + PostGIS
-  - name: passbi-postgres
-    databaseName: passbi
-    user: passbi
-    plan: free
-    postgresMajorVersion: "15"
-
-# NOTE: Redis est configuré avec un service externe (Redis Labs)
-# Aucune création Redis supplémentaire nécessaire sur Render
+# NOTE: Base de données PostgreSQL gérée par Supabase (externe)
+# NOTE: Redis géré par Upstash (externe)
+# Aucune création de bases de données nécessaire sur Render
