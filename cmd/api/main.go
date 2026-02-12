@@ -1,6 +1,9 @@
+//go:build !with_auth
+
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -15,6 +18,7 @@ import (
 	"github.com/passbi/passbi_core/internal/api"
 	"github.com/passbi/passbi_core/internal/cache"
 	"github.com/passbi/passbi_core/internal/db"
+	"github.com/passbi/passbi_core/internal/graph"
 )
 
 func main() {
@@ -33,6 +37,14 @@ func main() {
 	}
 	defer cache.Close()
 	log.Println("✓ Redis connection established")
+
+	// Load routing graph into memory
+	pool, _ := db.GetDB()
+	g := graph.GetGraph()
+	if err := g.LoadFromDB(context.Background(), pool); err != nil {
+		log.Fatalf("Failed to load routing graph: %v", err)
+	}
+	log.Println("✓ Routing graph loaded into memory")
 
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
