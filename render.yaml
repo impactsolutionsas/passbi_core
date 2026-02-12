@@ -1,0 +1,90 @@
+# Render Blueprint pour PassBi Core
+# Déploiement automatique : PostgreSQL + API Go
+# NOTE: Redis doit être créé manuellement dans le dashboard Render
+
+services:
+  # API PassBi (Application Go)
+  - type: web
+    name: passbi-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    repo: https://github.com/impactsolutionsas/passbi_core
+    branch: main
+    envVars:
+      # Database (références automatiques au service postgres)
+      - key: DB_HOST
+        fromDatabase:
+          name: passbi-postgres
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: passbi-postgres
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: passbi-postgres
+          property: database
+      - key: DB_USER
+        fromDatabase:
+          name: passbi-postgres
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: passbi-postgres
+          property: password
+      - key: DB_SSLMODE
+        value: require
+
+      # Redis (À CONFIGURER MANUELLEMENT après création du service Redis)
+      # Après avoir créé le service Redis dans le dashboard:
+      # 1. Copier REDIS_PRIVATE_URL depuis le service Redis
+      # 2. Ajouter ces variables dans le service passbi-api
+      # Format attendu: redis://:password@host:port
+      #
+      # REDIS_HOST: copier depuis Redis service
+      # REDIS_PORT: copier depuis Redis service
+      # REDIS_PASSWORD: copier depuis Redis service
+      # REDIS_DB: 0
+
+      # API Configuration
+      - key: API_PORT
+        value: 8080
+      - key: API_READ_TIMEOUT
+        value: 5s
+      - key: API_WRITE_TIMEOUT
+        value: 10s
+
+      # Cache Configuration
+      - key: CACHE_TTL
+        value: 10m
+      - key: CACHE_MUTEX_TTL
+        value: 5s
+
+      # Routing Configuration
+      - key: MAX_WALK_DISTANCE
+        value: 500
+      - key: WALKING_SPEED
+        value: 1.4
+      - key: TRANSFER_TIME
+        value: 180
+      - key: MAX_EXPLORED_NODES
+        value: 50000
+      - key: ROUTE_TIMEOUT
+        value: 10s
+
+    healthCheckPath: /health
+
+databases:
+  # PostgreSQL + PostGIS
+  - name: passbi-postgres
+    databaseName: passbi
+    user: passbi
+    plan: free
+    postgresMajorVersion: "15"
+
+# NOTE: Redis n'est pas supporté dans les Blueprints Render
+# Vous devez créer Redis manuellement :
+# 1. Dashboard Render → New + → Redis
+# 2. Nom: passbi-redis
+# 3. Plan: Free
+# 4. Puis ajouter les variables REDIS_* dans le service passbi-api

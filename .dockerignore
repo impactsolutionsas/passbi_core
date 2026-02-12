@@ -1,0 +1,55 @@
+# Git
+.git
+.gitignore
+.github
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Development files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test files
+*_test.go
+testdata/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+passbi-api
+passbi-import
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Data files
+data/
+*.csv
+*.txt
+gtfs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Node modules (if any)
+node_modules/
+
+# Logs
+*.log
+logs/

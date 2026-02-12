@@ -1,0 +1,8 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "./passbi-api"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
