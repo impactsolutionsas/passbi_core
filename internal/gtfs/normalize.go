@@ -12,22 +12,19 @@ import (
 )
 
 // InferMode determines the transit mode from a GTFS route
-// Priority: route_type field, then keyword matching, default to BUS
+// Uses agency_id prefix first, then GTFS route_type, default to BUS
 func InferMode(route models.GTFSRoute) models.TransitMode {
-	// First check for keyword matches (more specific)
-	routeName := strings.ToUpper(route.ShortName + " " + route.LongName)
-
-	if strings.Contains(routeName, "BRT") || strings.Contains(routeName, "RAPID") {
+	// First: infer from agency ID (most reliable for Dakar transit)
+	agencyUpper := strings.ToUpper(route.AgencyID)
+	if strings.Contains(agencyUpper, "BRT") {
 		return models.ModeBRT
 	}
-	if strings.Contains(routeName, "TER") || strings.Contains(routeName, "TRAIN") || strings.Contains(routeName, "RAIL") {
+	if strings.Contains(agencyUpper, "TER") {
 		return models.ModeTER
 	}
-	if strings.Contains(routeName, "FERRY") || strings.Contains(routeName, "BOAT") {
-		return models.ModeFerry
-	}
-	if strings.Contains(routeName, "TRAM") {
-		return models.ModeTram
+	// AFTU and DDD (Dakar Dem Dikk) are bus operators
+	if strings.Contains(agencyUpper, "AFTU") || strings.Contains(agencyUpper, "DDD") || strings.Contains(agencyUpper, "DEM") {
+		return models.ModeBus
 	}
 
 	// Then check GTFS route_type mapping
@@ -36,18 +33,14 @@ func InferMode(route models.GTFSRoute) models.TransitMode {
 	case 0: // Tram, Streetcar, Light rail
 		return models.ModeTram
 	case 1: // Subway, Metro
-		return models.ModeBRT // Map to BRT for now
+		return models.ModeBRT
 	case 2: // Rail
 		return models.ModeTER
 	case 3: // Bus
 		return models.ModeBus
 	case 4: // Ferry
 		return models.ModeFerry
-	case 5: // Cable tram
-		return models.ModeTram
-	case 6: // Aerial lift, suspended cable car
-		return models.ModeTram
-	case 7: // Funicular
+	case 5, 6, 7: // Cable tram, Aerial lift, Funicular
 		return models.ModeTram
 	}
 

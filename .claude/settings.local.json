@@ -84,7 +84,16 @@
       "Bash(__NEW_LINE_ee5f97469bd3a841__ curl -s -H \"X-API-Key: $API_KEY\" \"http://localhost:8080/v2/stops/nearby?lat=14.6757028&lon=-17.4331138889&radius=500\")",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(git checkout:*)",
+      "Bash(git merge:*)",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)",
+      "Bash(test:*)",
+      "Bash(SUPABASE_PASSWORD=I9YyF1jg7XBuxRrQ ./scripts/setup-supabase.sh:*)",
+      "Bash(./scripts/import-gtfs-to-supabase.sh:*)",
+      "Bash(go clean:*)",
+      "Bash(gh api:*)"
     ],
     "additionalDirectories": [
       "/Users/macpro/Desktop/PASSBI-DEVLAND/passbi_core/docs/api"
