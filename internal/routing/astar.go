@@ -183,14 +183,22 @@ func (r *Router) astar(ctx context.Context, startNodes []models.Node, goalSet ma
 	return nil, fmt.Errorf("no path found after exploring %d nodes", exploredCount)
 }
 
-// findNearestNodes finds the N nearest nodes to a coordinate using PostGIS kNN
+// findNearestNodes finds the N nearest nodes to a coordinate using Haversine formula
 func (r *Router) findNearestNodes(ctx context.Context, lat, lon float64, limit int) ([]models.Node, error) {
 	query := `
 		SELECT n.id, n.stop_id, s.name, n.route_id, COALESCE(rt.short_name, rt.long_name, rt.id), n.mode, s.lat, s.lon
 		FROM node n
 		JOIN stop s ON s.id = n.stop_id
 		LEFT JOIN route rt ON rt.id = n.route_id
-		ORDER BY s.geom <-> ST_SetSRID(ST_MakePoint($1, $2), 4326)
+		ORDER BY (
+			6371000 * acos(
+				LEAST(1.0, GREATEST(-1.0,
+					cos(radians($2)) * cos(radians(s.lat)) *
+					cos(radians(s.lon) - radians($1)) +
+					sin(radians($2)) * sin(radians(s.lat))
+				))
+			)
+		)
 		LIMIT $3
 	`
 

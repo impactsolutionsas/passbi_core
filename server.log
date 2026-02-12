@@ -1,0 +1,44 @@
+🚀 Starting PassBI Server...
+
+Configuration:
+  Database: macpro@localhost:5432/passbi
+  Redis: localhost:6379
+  API Port: 8080
+  Auth: false
+
+Starting server on port 8080...
+2026/02/12 10:19:51 Starting PassBi API server...
+2026/02/12 10:19:52 ✓ Database connection established
+2026/02/12 10:19:52 ✓ Redis connection established
+2026/02/12 10:19:52 🚀 Server listening on http://localhost:8080
+2026/02/12 10:19:52 📍 Route search: http://localhost:8080/v2/route-search?from=LAT,LON&to=LAT,LON
+2026/02/12 10:19:52 ❤️  Health check: http://localhost:8080/health
+
+ ┌───────────────────────────────────────────────────┐ 
+ │                    PassBi API                     │ 
+ │                   Fiber v2.52.0                   │ 
+ │               http://127.0.0.1:8080               │ 
+ │       (bound on host 0.0.0.0 and port 8080)       │ 
+ │                                                   │ 
+ │ Handlers ............ 12  Processes ........... 1 │ 
+ │ Prefork ....... Disabled  PID ............. 11040 │ 
+ └───────────────────────────────────────────────────┘ 
+
+10:20:06 | 200 |  283.863845ms | GET /v2/stops/nearby
+10:20:12 | 200 |  461.665342ms | GET /v2/route-search
+10:20:17 | 200 |    1.321374ms | GET /v2/route-search
+10:20:22 | 200 |   41.073902ms | GET /v2/routes/list
+10:20:29 | 503 |   21.107207ms | GET /health
+10:20:32 | 503 |    1.572773ms | GET /health
+2026/02/12 10:20:35 Error: Request Timeout
+2026/02/12 10:20:48 Route computation failed for strategy direct: routing timeout exceeded
+10:20:38 | 200 | 10.002558605s | GET /v2/route-search
+10:21:42 | 200 |   14.249649ms | GET /v2/stops/nearby
+10:48:30 | 200 |   51.600888ms | GET /v2/stops/nearby
+10:48:52 | 200 |   23.133173ms | GET /v2/stops/nearby
+10:48:53 | 200 |    6.948935ms | GET /v2/stops/nearby
+2026/02/12 10:50:33 Error: Request Timeout
+2026/02/12 10:50:38 Route computation failed for strategy direct: routing timeout exceeded
+10:50:28 | 200 | 10.026562511s | GET /v2/route-search
+./start_server.sh: line 22: 11036 Terminated: 15          go run cmd/api/main.go
+2026/02/12 11:25:53 Shutting down gracefully...

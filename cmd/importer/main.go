@@ -105,7 +105,7 @@ func runImport(ctx context.Context, pool *pgxpool.Pool, agencyID, gtfsPath strin
 
 	// Import stops
 	log.Println("Step 4/5: Importing stops and routes to database...")
-	if err := importStops(ctx, tx, feed.Stops); err != nil {
+	if err := importStops(ctx, tx, agencyID, feed.Stops); err != nil {
 		return fmt.Errorf("failed to import stops: %w", err)
 	}
 
@@ -161,33 +161,36 @@ func createImportLog(ctx context.Context, pool *pgxpool.Pool, agencyID string) (
 }
 
 func updateImportLog(ctx context.Context, pool *pgxpool.Pool, id int64, status string, stops, routes, nodes, edges int, errMsg string) error {
+	// Build message with stats
+	message := errMsg
+	if status == "success" {
+		message = fmt.Sprintf("Imported %d stops, %d routes, %d nodes, %d edges", stops, routes, nodes, edges)
+	}
+
 	_, err := pool.Exec(ctx, `
 		UPDATE import_log
 		SET completed_at = NOW(),
 		    status = $2,
-		    stops_count = $3,
-		    routes_count = $4,
-		    nodes_count = $5,
-		    edges_count = $6,
-		    error_message = $7
+		    message = $3
 		WHERE id = $1
-	`, id, status, stops, routes, nodes, edges, errMsg)
+	`, id, status, message)
 
 	return err
 }
 
-func importStops(ctx context.Context, tx pgx.Tx, stops []models.GTFSStop) error {
+func importStops(ctx context.Context, tx pgx.Tx, agencyID string, stops []models.GTFSStop) error {
 	batch := &pgx.Batch{}
 
 	for _, stop := range stops {
 		batch.Queue(`
-			INSERT INTO stop (id, name, lat, lon)
-			VALUES ($1, $2, $3, $4)
+			INSERT INTO stop (id, name, lat, lon, agency_id)
+			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (id) DO UPDATE
 			SET name = EXCLUDED.name,
 			    lat = EXCLUDED.lat,
-			    lon = EXCLUDED.lon
-		`, stop.StopID, stop.StopName, stop.Lat, stop.Lon)
+			    lon = EXCLUDED.lon,
+			    agency_id = EXCLUDED.agency_id
+		`, stop.StopID, stop.StopName, stop.Lat, stop.Lon, agencyID)
 	}
 
 	results := tx.SendBatch(ctx, batch)
