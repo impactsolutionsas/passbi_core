@@ -66,7 +66,25 @@
       "Bash(docs/schemas/typescript/types.ts << 'TS_EOF'\n// PassBi Core API TypeScript Types\n// Generated from OpenAPI specification\n\nexport type TransitMode = 'BUS' | 'BRT' | 'TER' | 'FERRY' | 'TRAM';\nexport type StepType = 'WALK' | 'RIDE' | 'TRANSFER';\nexport type RoutingStrategy = 'no_transfer' | 'direct' | 'simple' | 'fast';\n\nexport interface RouteSearchResponse {\n  routes: {\n    no_transfer?: RouteResult;\n    direct?: RouteResult;\n    simple?: RouteResult;\n    fast?: RouteResult;\n  };\n}\n\nexport interface RouteResult {\n  duration_seconds: number;\n  walk_distance_meters: number;\n  transfers: number;\n  steps: Step[];\n}\n\nexport interface Step {\n  type: StepType;\n  from_stop: string;\n  to_stop: string;\n  from_stop_name: string;\n  to_stop_name: string;\n  route?: string;\n  route_name?: string;\n  mode?: TransitMode;\n  duration_seconds: number;\n  distance_meters?: number;\n  num_stops?: number;\n}\n\nexport interface NearbyStopsResponse {\n  stops: NearbyStop[];\n}\n\nexport interface NearbyStop {\n  id: string;\n  name: string;\n  lat: number;\n  lon: number;\n  distance_meters: number;\n  routes: string[];\n  routes_count: number;\n}\n\nexport interface RoutesListResponse {\n  routes: RouteInfo[];\n  total: number;\n}\n\nexport interface RouteInfo {\n  id: string;\n  name: string;\n  mode: TransitMode;\n  agency_id: string;\n  stops_count: number;\n}\n\nexport interface HealthResponse {\n  status: 'healthy' | 'unhealthy';\n  checks: {\n    database: string;\n    redis: string;\n  };\n}\n\nexport interface ErrorResponse {\n  error: string;\n}\nTS_EOF)",
       "Bash(npx --yes swagger-ui-watcher:*)",
       "Bash(npx:*)",
-      "Bash(pkill:*)"
+      "Bash(pkill:*)",
+      "Bash(ls:*)",
+      "Bash(go build:*)",
+      "Bash(pg_isready:*)",
+      "Bash(DB_HOST=localhost DB_PORT=5432 DB_NAME=passbi DB_USER=passbi_user DB_PASSWORD=passbi_password DB_SSLMODE=disable ./bin/passbi-import --agency-id=dakar_ter --gtfs=gtfs_folder/gtfs_TER.zip --rebuild-graph)",
+      "Bash(tee:*)",
+      "Bash(./import_gtfs.sh:*)",
+      "Bash(brew services:*)",
+      "Bash(createdb:*)",
+      "Bash(/usr/local/opt/postgresql@15/bin/createdb:*)",
+      "Bash(/usr/local/opt/postgresql@15/bin/psql:*)",
+      "Bash(brew info:*)",
+      "Bash(./bin/passbi-import:*)",
+      "Bash(API_KEY=\"pk_test_96513e361fd6895c1ad1c2526c6fe8dd3c4e51db6984a300c765749cd1aeb9f1_4d9b\":*)",
+      "Bash(__NEW_LINE_ccad12f3c84e8972__ echo \"=== Test avec clé API ===\")",
+      "Bash(__NEW_LINE_ee5f97469bd3a841__ curl -s -H \"X-API-Key: $API_KEY\" \"http://localhost:8080/v2/stops/nearby?lat=14.6757028&lon=-17.4331138889&radius=500\")",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ],
     "additionalDirectories": [
       "/Users/macpro/Desktop/PASSBI-DEVLAND/passbi_core/docs/api"
