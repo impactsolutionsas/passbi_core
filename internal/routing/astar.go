@@ -77,25 +77,34 @@ func (r *Router) FindPath(ctx context.Context, fromLat, fromLon, toLat, toLon fl
 		return nil, err
 	}
 
-	// Build Path response
+	// Build steps and compute metrics
+	steps := buildSteps(path.nodes, path.edges)
+
+	// Count actual transfers (route changes between RIDE steps)
+	transfers := 0
+	totalWalk := 0
+	lastRideRoute := ""
+	for _, step := range steps {
+		if step.Type == models.EdgeRide {
+			if lastRideRoute != "" && step.Route != lastRideRoute {
+				transfers++
+			}
+			lastRideRoute = step.Route
+		}
+		totalWalk += step.Distance
+	}
+
 	result := &models.Path{
-		Nodes:     path.nodes,
-		Edges:     path.edges,
-		TotalTime: path.gScore,
-		Strategy:  strategy.Name(),
+		Nodes:         path.nodes,
+		Edges:         path.edges,
+		TotalTime:     path.gScore,
+		Strategy:      strategy.Name(),
+		TotalWalk:     totalWalk,
+		Transfers:     transfers,
+		DurationMins:  path.gScore / 60,
+		WalkDistanceM: totalWalk,
+		Steps:         steps,
 	}
-
-	// Calculate metrics
-	for _, edge := range path.edges {
-		result.TotalWalk += edge.CostWalk
-		result.Transfers += edge.CostTransfer
-	}
-
-	result.DurationMins = result.TotalTime / 60
-	result.WalkDistanceM = result.TotalWalk
-
-	// Build steps
-	result.Steps = buildSteps(result.Nodes, result.Edges)
 
 	return result, nil
 }
@@ -216,56 +225,137 @@ func (r *Router) astar(ctx context.Context, startNodes []models.Node, goalSet ma
 }
 
 // buildSteps constructs user-friendly step-by-step directions
-// Consolidates consecutive RIDE steps on the same route into a single step
+// - Consolidates consecutive RIDE edges on the same route into one step with stops list
+// - WALK steps don't show route/mode info
+// - Eliminates redundant back-and-forth walks
+// - TRANSFER edges between routes at same stop are merged into context
 func buildSteps(nodes []models.Node, edges []models.Edge) []models.Step {
 	if len(nodes) == 0 || len(edges) == 0 {
 		return []models.Step{}
 	}
 
-	steps := []models.Step{}
+	// Phase 1: Build raw steps
+	var rawSteps []models.Step
 	var currentStep *models.Step
 
 	for i, edge := range edges {
 		fromNode := nodes[i]
 		toNode := nodes[i+1]
 
-		step := models.Step{
-			Type:         edge.Type,
-			FromStop:     fromNode.StopID,
-			FromStopName: fromNode.StopName,
-			ToStop:       toNode.StopID,
-			ToStopName:   toNode.StopName,
-			Route:        fromNode.RouteID,
-			RouteName:    fromNode.RouteName,
-			Mode:         fromNode.Mode,
-			Duration:     edge.CostTime,
-			Distance:     edge.CostWalk,
-			NumStops:     1,
-		}
-
-		// Try to consolidate consecutive RIDE steps on the same route
-		if currentStep != nil &&
-			currentStep.Type == models.EdgeRide &&
-			step.Type == models.EdgeRide &&
-			currentStep.Route == step.Route {
-			currentStep.ToStop = step.ToStop
-			currentStep.ToStopName = step.ToStopName
-			currentStep.Duration += step.Duration
-			currentStep.Distance += step.Distance
-			currentStep.NumStops++
-		} else {
-			if currentStep != nil {
-				steps = append(steps, *currentStep)
+		switch edge.Type {
+		case models.EdgeRide:
+			// Consolidate consecutive RIDE edges on the same route
+			if currentStep != nil &&
+				currentStep.Type == models.EdgeRide &&
+				currentStep.Route == fromNode.RouteID {
+				// Extend current ride step
+				currentStep.ToStop = toNode.StopID
+				currentStep.ToStopName = toNode.StopName
+				currentStep.Duration += edge.CostTime
+				currentStep.NumStops++
+				currentStep.Stops = append(currentStep.Stops, models.StopInfo{
+					ID:   toNode.StopID,
+					Name: toNode.StopName,
+				})
+			} else {
+				// Save previous step and start new RIDE
+				if currentStep != nil {
+					rawSteps = append(rawSteps, *currentStep)
+				}
+				currentStep = &models.Step{
+					Type:         models.EdgeRide,
+					FromStop:     fromNode.StopID,
+					FromStopName: fromNode.StopName,
+					ToStop:       toNode.StopID,
+					ToStopName:   toNode.StopName,
+					Route:        fromNode.RouteID,
+					RouteName:    fromNode.RouteName,
+					Mode:         fromNode.Mode,
+					Duration:     edge.CostTime,
+					NumStops:     1,
+					Stops: []models.StopInfo{
+						{ID: fromNode.StopID, Name: fromNode.StopName},
+						{ID: toNode.StopID, Name: toNode.StopName},
+					},
+				}
 			}
-			currentStep = &step
+
+		case models.EdgeWalk:
+			// Save previous step
+			if currentStep != nil {
+				rawSteps = append(rawSteps, *currentStep)
+				currentStep = nil
+			}
+			// WALK steps: no route/mode info
+			rawSteps = append(rawSteps, models.Step{
+				Type:         models.EdgeWalk,
+				FromStop:     fromNode.StopID,
+				FromStopName: fromNode.StopName,
+				ToStop:       toNode.StopID,
+				ToStopName:   toNode.StopName,
+				Duration:     edge.CostTime,
+				Distance:     edge.CostWalk,
+			})
+
+		case models.EdgeTransfer:
+			// Save previous step - transfers are implicit between ride steps
+			if currentStep != nil {
+				rawSteps = append(rawSteps, *currentStep)
+				currentStep = nil
+			}
+			// Only add explicit transfer step if there's actual wait time
+			if edge.CostTime > 0 {
+				rawSteps = append(rawSteps, models.Step{
+					Type:         models.EdgeTransfer,
+					FromStop:     fromNode.StopID,
+					FromStopName: fromNode.StopName,
+					ToStop:       toNode.StopID,
+					ToStopName:   toNode.StopName,
+					Duration:     edge.CostTime,
+				})
+			}
 		}
 	}
 
+	// Don't forget the last step
 	if currentStep != nil {
-		steps = append(steps, *currentStep)
+		rawSteps = append(rawSteps, *currentStep)
 	}
 
-	return steps
+	// Phase 2: Clean up - remove redundant walks and micro-walks
+	var cleanSteps []models.Step
+	for i, step := range rawSteps {
+		// Skip very short walks (< 15m) that are just stop-matching artifacts
+		if step.Type == models.EdgeWalk && step.Distance < 15 {
+			// Check if this walk goes to the same named stop (duplicate stop IDs)
+			if step.FromStopName == step.ToStopName {
+				continue
+			}
+			// Check for back-and-forth: walk A→B followed by walk B→A
+			if i+1 < len(rawSteps) && rawSteps[i+1].Type == models.EdgeWalk {
+				next := rawSteps[i+1]
+				if step.FromStop == next.ToStop && step.ToStop == next.FromStop {
+					continue // Skip both walks (the next one will also be skipped)
+				}
+			}
+			// Check if previous was a reverse walk
+			if len(cleanSteps) > 0 {
+				prev := cleanSteps[len(cleanSteps)-1]
+				if prev.Type == models.EdgeWalk && prev.FromStop == step.ToStop && prev.ToStop == step.FromStop {
+					// Remove previous walk too
+					cleanSteps = cleanSteps[:len(cleanSteps)-1]
+					continue
+				}
+			}
+		}
+		cleanSteps = append(cleanSteps, step)
+	}
+
+	if cleanSteps == nil {
+		cleanSteps = []models.Step{}
+	}
+
+	return cleanSteps
 }
 
 // haversineDistance calculates distance between two coordinates in meters

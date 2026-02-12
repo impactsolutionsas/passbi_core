@@ -82,6 +82,12 @@ type Path struct {
 	Steps         []Step
 }
 
+// StopInfo represents a stop in a journey step
+type StopInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // Step represents one segment of a journey
 type Step struct {
 	Type         EdgeType    `json:"type"`
@@ -94,7 +100,8 @@ type Step struct {
 	Mode         TransitMode `json:"mode,omitempty"`
 	Duration     int         `json:"duration_seconds"`
 	Distance     int         `json:"distance_meters,omitempty"`
-	NumStops     int         `json:"num_stops,omitempty"` // Number of stops traversed
+	NumStops     int         `json:"num_stops,omitempty"`
+	Stops        []StopInfo  `json:"stops,omitempty"` // Intermediate stops for RIDE steps
 }
 
 // GTFS data structures for import
