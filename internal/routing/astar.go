@@ -5,16 +5,33 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/passbi/passbi_core/internal/models"
 )
 
-const (
-	maxExploredNodes = 50000
-	routingTimeout   = 10 * time.Second
-)
+// getMaxExploredNodes reads MAX_EXPLORED_NODES from env or returns default
+func getMaxExploredNodes() int {
+	if val := os.Getenv("MAX_EXPLORED_NODES"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil {
+			return n
+		}
+	}
+	return 50000
+}
+
+// getRoutingTimeout reads ROUTE_TIMEOUT from env or returns default
+func getRoutingTimeout() time.Duration {
+	if val := os.Getenv("ROUTE_TIMEOUT"); val != "" {
+		if d, err := time.ParseDuration(val); err == nil {
+			return d
+		}
+	}
+	return 10 * time.Second
+}
 
 // Router handles pathfinding operations
 type Router struct {
@@ -29,7 +46,7 @@ func NewRouter(db *pgxpool.Pool) *Router {
 // FindPath finds a route from origin to destination using the specified strategy
 func (r *Router) FindPath(ctx context.Context, fromLat, fromLon, toLat, toLon float64, strategy Strategy) (*models.Path, error) {
 	// Create context with timeout
-	ctx, cancel := context.WithTimeout(ctx, routingTimeout)
+	ctx, cancel := context.WithTimeout(ctx, getRoutingTimeout())
 	defer cancel()
 
 	// Find candidate start nodes (nearest stops to origin)
@@ -90,7 +107,9 @@ func (r *Router) astar(ctx context.Context, startNodes []models.Node, goalSet ma
 
 	// Add all start nodes to open set
 	for _, node := range startNodes {
-		heuristic := haversineDistance(node.Lat, node.Lon, goalLat, goalLon) / 1.4 // walking speed
+		// Use average transit speed (20 km/h = 5.5 m/s) for more aggressive search
+		// This encourages exploring transit routes over walking
+		heuristic := haversineDistance(node.Lat, node.Lon, goalLat, goalLon) / 5.5
 		path := &searchPath{
 			nodeID:    node.ID,
 			nodes:     []models.Node{node},
@@ -104,6 +123,7 @@ func (r *Router) astar(ctx context.Context, startNodes []models.Node, goalSet ma
 	}
 
 	exploredCount := 0
+	maxNodes := getMaxExploredNodes()
 
 	for openSet.Len() > 0 {
 		// Check timeout
@@ -114,7 +134,7 @@ func (r *Router) astar(ctx context.Context, startNodes []models.Node, goalSet ma
 		}
 
 		// Check exploration limit
-		if exploredCount > maxExploredNodes {
+		if exploredCount > maxNodes {
 			return nil, fmt.Errorf("explored too many nodes (%d), no path found", exploredCount)
 		}
 
@@ -162,8 +182,8 @@ func (r *Router) astar(ctx context.Context, startNodes []models.Node, goalSet ma
 				continue
 			}
 
-			// Calculate heuristic
-			h := haversineDistance(neighborNode.Lat, neighborNode.Lon, goalLat, goalLon) / 1.4
+			// Calculate heuristic (use average transit speed 5.5 m/s for better guidance)
+			h := haversineDistance(neighborNode.Lat, neighborNode.Lon, goalLat, goalLon) / 5.5
 
 			// Build new path
 			newPath := &searchPath{

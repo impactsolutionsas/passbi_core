@@ -4,11 +4,11 @@ set -e
 echo "🔧 Configuration Supabase pour PassBi Core"
 echo "=========================================="
 
-# Supabase credentials
-SUPABASE_HOST="db.xlvuggzprjjkzolonbuh.supabase.co"
-SUPABASE_PORT="5432"
+# Supabase credentials (using pooler for better compatibility)
+SUPABASE_HOST="aws-1-eu-north-1.pooler.supabase.com"
+SUPABASE_PORT="6543"
 SUPABASE_DB="postgres"
-SUPABASE_USER="postgres"
+SUPABASE_USER="postgres.xlvuggzprjjkzolonbuh"
 
 # Prompt for password
 if [ -z "$SUPABASE_PASSWORD" ]; then
