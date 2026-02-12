@@ -303,25 +303,50 @@ func StopsNearby(c *fiber.Ctx) error {
 
 	ctx := c.Context()
 
-	// Query nearby stops with their routes
+	// Query nearby stops with their routes (using Haversine formula)
 	query := `
+		WITH stop_distances AS (
+			SELECT
+				s.id,
+				s.name,
+				s.lat,
+				s.lon,
+				ROUND(
+					6371000 * acos(
+						LEAST(1.0, GREATEST(-1.0,
+							cos(radians($2)) * cos(radians(s.lat)) *
+							cos(radians(s.lon) - radians($1)) +
+							sin(radians($2)) * sin(radians(s.lat))
+						))
+					)
+				) AS distance
+			FROM stop s
+			WHERE (
+				6371000 * acos(
+					LEAST(1.0, GREATEST(-1.0,
+						cos(radians($2)) * cos(radians(s.lat)) *
+						cos(radians(s.lon) - radians($1)) +
+						sin(radians($2)) * sin(radians(s.lat))
+					))
+				)
+			) <= $3
+		)
 		SELECT
-			s.id,
-			s.name,
-			s.lat,
-			s.lon,
-			ROUND(ST_Distance(s.geom, ST_SetSRID(ST_MakePoint($1, $2), 4326))) AS distance,
+			sd.id,
+			sd.name,
+			sd.lat,
+			sd.lon,
+			sd.distance,
 			COALESCE(
 				array_agg(DISTINCT COALESCE(r.short_name, r.long_name, r.id))
 				FILTER (WHERE r.id IS NOT NULL),
 				ARRAY[]::text[]
 			) AS routes
-		FROM stop s
-		LEFT JOIN node n ON n.stop_id = s.id
+		FROM stop_distances sd
+		LEFT JOIN node n ON n.stop_id = sd.id
 		LEFT JOIN route r ON r.id = n.route_id
-		WHERE ST_DWithin(s.geom, ST_SetSRID(ST_MakePoint($1, $2), 4326), $3)
-		GROUP BY s.id, s.name, s.lat, s.lon, s.geom
-		ORDER BY distance
+		GROUP BY sd.id, sd.name, sd.lat, sd.lon, sd.distance
+		ORDER BY sd.distance
 		LIMIT 20
 	`
 

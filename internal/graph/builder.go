@@ -65,6 +65,12 @@ func (b *Builder) BuildNodes(ctx context.Context, feed *gtfs.GTFSFeed) (int, err
 		routeModes[route.RouteID] = gtfs.InferMode(route)
 	}
 
+	// Build a map of stop_id -> coordinates
+	stopCoords := make(map[string]struct{ lat, lon float64 })
+	for _, stop := range feed.Stops {
+		stopCoords[stop.StopID] = struct{ lat, lon float64 }{lat: stop.Lat, lon: stop.Lon}
+	}
+
 	// Build a set of unique (stop_id, route_id) pairs from trips
 	type nodeKey struct {
 		stopID  string
@@ -99,11 +105,17 @@ func (b *Builder) BuildNodes(ctx context.Context, feed *gtfs.GTFSFeed) (int, err
 			mode = models.ModeBus // default
 		}
 
+		coords, ok := stopCoords[key.stopID]
+		if !ok {
+			log.Printf("Warning: stop %s not found in stops, skipping node", key.stopID)
+			continue
+		}
+
 		batch.Queue(`
-			INSERT INTO node (stop_id, route_id, mode)
-			VALUES ($1, $2, $3)
+			INSERT INTO node (stop_id, route_id, mode, lat, lon)
+			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT (stop_id, route_id) DO NOTHING
-		`, key.stopID, key.routeID, mode)
+		`, key.stopID, key.routeID, mode, coords.lat, coords.lon)
 
 		count++
 
@@ -244,28 +256,41 @@ func (b *Builder) buildRideEdges(ctx context.Context, feed *gtfs.GTFSFeed) (int,
 func (b *Builder) buildWalkEdges(ctx context.Context) (int, error) {
 	log.Printf("Building WALK edges for stops within %d meters...", maxWalkDistance)
 
-	// Use PostGIS to find nearby nodes
+	// Simplified version without PostGIS - uses Haversine formula
+	// Note: This is less efficient than PostGIS spatial indexes but works without the extension
 	query := `
 		INSERT INTO edge (from_node_id, to_node_id, type, cost_time, cost_walk, cost_transfer)
 		SELECT
 			n1.id,
-			n2.id,
+			n2_with_dist.id,
 			'WALK',
-			CEIL(ST_Distance(n1.geom, n2.geom) / $1)::INT,
-			CEIL(ST_Distance(n1.geom, n2.geom))::INT,
+			CEIL(n2_with_dist.distance / $1)::INT,
+			CEIL(n2_with_dist.distance)::INT,
 			0
 		FROM node n1
 		CROSS JOIN LATERAL (
-			SELECT id, geom
+			SELECT
+				n2.id,
+				(
+					6371000 * acos(
+						LEAST(1.0, GREATEST(-1.0,
+							cos(radians(n1.lat)) * cos(radians(n2.lat)) *
+							cos(radians(n2.lon) - radians(n1.lon)) +
+							sin(radians(n1.lat)) * sin(radians(n2.lat))
+						))
+					)
+				) as distance
 			FROM node n2
 			WHERE n2.id != n1.id
-				AND ST_DWithin(n1.geom, n2.geom, $2)
-			LIMIT 10
-		) n2
+				AND n2.stop_id != n1.stop_id
+		) n2_with_dist
+		WHERE n2_with_dist.distance <= $2
+		ORDER BY n1.id, n2_with_dist.distance
+		LIMIT 100000
 		ON CONFLICT DO NOTHING
 	`
 
-	result, err := b.db.Exec(ctx, query, walkingSpeed, maxWalkDistance)
+	result, err := b.db.Exec(ctx, query, walkingSpeed, float64(maxWalkDistance))
 	if err != nil {
 		return 0, err
 	}
