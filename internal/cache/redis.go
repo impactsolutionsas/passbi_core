@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -51,7 +52,9 @@ func LoadConfigFromEnv() *Config {
 func GetClient() (*redis.Client, error) {
 	clientOnce.Do(func() {
 		config := LoadConfigFromEnv()
-		client = redis.NewClient(&redis.Options{
+
+		// Configure Redis options
+		opts := &redis.Options{
 			Addr:         fmt.Sprintf("%s:%d", config.Host, config.Port),
 			Password:     config.Password,
 			DB:           config.DB,
@@ -60,7 +63,16 @@ func GetClient() (*redis.Client, error) {
 			WriteTimeout: 3 * time.Second,
 			PoolSize:     10,
 			MinIdleConns: 2,
-		})
+		}
+
+		// Enable TLS if configured (required for Upstash)
+		if getEnv("REDIS_TLS_ENABLED", "false") == "true" {
+			opts.TLSConfig = &tls.Config{
+				MinVersion: tls.VersionTLS12,
+			}
+		}
+
+		client = redis.NewClient(opts)
 
 		// Test connection
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
