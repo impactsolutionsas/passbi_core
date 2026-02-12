@@ -13,11 +13,11 @@ COPY vendor ./vendor
 # Copy source code
 COPY . .
 
-# Build API server
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o passbi-api cmd/api/main.go
+# Build API server (default: without auth, use -tags with_auth for production auth)
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o passbi-api ./cmd/api/
 
 # Build importer
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o passbi-import cmd/importer/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o passbi-import ./cmd/importer/
 
 # Runtime stage
 FROM alpine:latest

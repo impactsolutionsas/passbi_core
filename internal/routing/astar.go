@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/passbi/passbi_core/internal/graph"
 	"github.com/passbi/passbi_core/internal/models"
 )
 
@@ -33,14 +33,14 @@ func getRoutingTimeout() time.Duration {
 	return 10 * time.Second
 }
 
-// Router handles pathfinding operations
+// Router handles pathfinding operations using in-memory graph
 type Router struct {
-	db *pgxpool.Pool
+	graph *graph.InMemoryGraph
 }
 
-// NewRouter creates a new router instance
-func NewRouter(db *pgxpool.Pool) *Router {
-	return &Router{db: db}
+// NewRouter creates a new router instance using the in-memory graph
+func NewRouter() *Router {
+	return &Router{graph: graph.GetGraph()}
 }
 
 // FindPath finds a route from origin to destination using the specified strategy
@@ -49,16 +49,20 @@ func (r *Router) FindPath(ctx context.Context, fromLat, fromLon, toLat, toLon fl
 	ctx, cancel := context.WithTimeout(ctx, getRoutingTimeout())
 	defer cancel()
 
-	// Find candidate start nodes (nearest stops to origin)
-	startNodes, err := r.findNearestNodes(ctx, fromLat, fromLon, 5)
-	if err != nil || len(startNodes) == 0 {
-		return nil, fmt.Errorf("no start nodes found near origin: %w", err)
+	if !r.graph.IsLoaded() {
+		return nil, fmt.Errorf("graph not loaded into memory")
 	}
 
-	// Find candidate goal nodes (nearest stops to destination)
-	goalNodes, err := r.findNearestNodes(ctx, toLat, toLon, 5)
-	if err != nil || len(goalNodes) == 0 {
-		return nil, fmt.Errorf("no goal nodes found near destination: %w", err)
+	// Find candidate start nodes (nearest stops to origin) - in-memory
+	startNodes := r.graph.FindNearestNodes(fromLat, fromLon, 10)
+	if len(startNodes) == 0 {
+		return nil, fmt.Errorf("no start nodes found near origin")
+	}
+
+	// Find candidate goal nodes (nearest stops to destination) - in-memory
+	goalNodes := r.graph.FindNearestNodes(toLat, toLon, 10)
+	if len(goalNodes) == 0 {
+		return nil, fmt.Errorf("no goal nodes found near destination")
 	}
 
 	// Build goal node set for quick lookup
@@ -67,7 +71,7 @@ func (r *Router) FindPath(ctx context.Context, fromLat, fromLon, toLat, toLon fl
 		goalSet[node.ID] = node
 	}
 
-	// Run A* search
+	// Run A* search - entirely in-memory
 	path, err := r.astar(ctx, startNodes, goalSet, toLat, toLon, strategy)
 	if err != nil {
 		return nil, err
@@ -91,24 +95,22 @@ func (r *Router) FindPath(ctx context.Context, fromLat, fromLon, toLat, toLon fl
 	result.WalkDistanceM = result.TotalWalk
 
 	// Build steps
-	result.Steps = r.buildSteps(result.Nodes, result.Edges)
+	result.Steps = buildSteps(result.Nodes, result.Edges)
 
 	return result, nil
 }
 
-// astar implements the A* pathfinding algorithm
+// astar implements the A* pathfinding algorithm using in-memory graph
 func (r *Router) astar(ctx context.Context, startNodes []models.Node, goalSet map[int64]models.Node, goalLat, goalLon float64, strategy Strategy) (*searchPath, error) {
 	// Initialize open set (priority queue)
 	openSet := &PriorityQueue{}
 	heap.Init(openSet)
 
-	// Track best paths to each node
-	bestPaths := make(map[int64]*searchPath)
+	// Track best gScore to each node (just the cost, not the full path)
+	bestG := make(map[int64]int)
 
 	// Add all start nodes to open set
 	for _, node := range startNodes {
-		// Use average transit speed (20 km/h = 5.5 m/s) for more aggressive search
-		// This encourages exploring transit routes over walking
 		heuristic := haversineDistance(node.Lat, node.Lon, goalLat, goalLon) / 5.5
 		path := &searchPath{
 			nodeID:    node.ID,
@@ -119,18 +121,20 @@ func (r *Router) astar(ctx context.Context, startNodes []models.Node, goalSet ma
 			transfers: 0,
 		}
 		heap.Push(openSet, path)
-		bestPaths[node.ID] = path
+		bestG[node.ID] = 0
 	}
 
 	exploredCount := 0
 	maxNodes := getMaxExploredNodes()
 
 	for openSet.Len() > 0 {
-		// Check timeout
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("routing timeout exceeded")
-		default:
+		// Check timeout periodically (every 1000 nodes to reduce overhead)
+		if exploredCount%1000 == 0 {
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("routing timeout exceeded after exploring %d nodes", exploredCount)
+			default:
+			}
 		}
 
 		// Check exploration limit
@@ -142,6 +146,11 @@ func (r *Router) astar(ctx context.Context, startNodes []models.Node, goalSet ma
 		current := heap.Pop(openSet).(*searchPath)
 		exploredCount++
 
+		// Skip if we already found a better path to this node
+		if bestScore, ok := bestG[current.nodeID]; ok && current.gScore > bestScore {
+			continue
+		}
+
 		// Check if we reached goal
 		if _, isGoal := goalSet[current.nodeID]; isGoal {
 			return current, nil
@@ -149,8 +158,6 @@ func (r *Router) astar(ctx context.Context, startNodes []models.Node, goalSet ma
 
 		// Check strategy stopping criteria
 		state := &PathState{
-			Nodes:         current.nodes,
-			Edges:         current.edges,
 			TotalTime:     current.gScore,
 			Transfers:     current.transfers,
 			ExploredNodes: exploredCount,
@@ -159,43 +166,48 @@ func (r *Router) astar(ctx context.Context, startNodes []models.Node, goalSet ma
 			continue
 		}
 
-		// Get neighbors (lazy load edges from database)
-		neighbors, err := r.loadEdges(ctx, current.nodeID)
-		if err != nil {
-			continue
-		}
+		// Get neighbors from in-memory graph (instant lookup)
+		neighbors := r.graph.GetEdges(current.nodeID)
 
 		// Explore neighbors
 		for _, edge := range neighbors {
-			// Get neighbor node info
-			neighborNode, err := r.getNode(ctx, edge.ToNodeID)
-			if err != nil {
-				continue
-			}
-
 			// Calculate tentative gScore
 			edgeCost := strategy.EdgeCost(edge)
 			tentativeG := current.gScore + edgeCost
 
 			// Check if this is a better path
-			if existing, ok := bestPaths[edge.ToNodeID]; ok && tentativeG >= existing.gScore {
+			if existingG, ok := bestG[edge.ToNodeID]; ok && tentativeG >= existingG {
 				continue
 			}
 
-			// Calculate heuristic (use average transit speed 5.5 m/s for better guidance)
+			// Get neighbor node info from in-memory graph (instant lookup)
+			neighborNode, ok := r.graph.GetNode(edge.ToNodeID)
+			if !ok {
+				continue
+			}
+
+			// Calculate heuristic
 			h := haversineDistance(neighborNode.Lat, neighborNode.Lon, goalLat, goalLon) / 5.5
 
 			// Build new path
+			newNodes := make([]models.Node, len(current.nodes)+1)
+			copy(newNodes, current.nodes)
+			newNodes[len(current.nodes)] = neighborNode
+
+			newEdges := make([]models.Edge, len(current.edges)+1)
+			copy(newEdges, current.edges)
+			newEdges[len(current.edges)] = edge
+
 			newPath := &searchPath{
 				nodeID:    edge.ToNodeID,
-				nodes:     append(append([]models.Node{}, current.nodes...), neighborNode),
-				edges:     append(append([]models.Edge{}, current.edges...), edge),
+				nodes:     newNodes,
+				edges:     newEdges,
 				gScore:    tentativeG,
 				fScore:    tentativeG + int(h),
 				transfers: current.transfers + edge.CostTransfer,
 			}
 
-			bestPaths[edge.ToNodeID] = newPath
+			bestG[edge.ToNodeID] = tentativeG
 			heap.Push(openSet, newPath)
 		}
 	}
@@ -203,91 +215,9 @@ func (r *Router) astar(ctx context.Context, startNodes []models.Node, goalSet ma
 	return nil, fmt.Errorf("no path found after exploring %d nodes", exploredCount)
 }
 
-// findNearestNodes finds the N nearest nodes to a coordinate using Haversine formula
-func (r *Router) findNearestNodes(ctx context.Context, lat, lon float64, limit int) ([]models.Node, error) {
-	query := `
-		SELECT n.id, n.stop_id, s.name, n.route_id, COALESCE(rt.short_name, rt.long_name, rt.id), n.mode, s.lat, s.lon
-		FROM node n
-		JOIN stop s ON s.id = n.stop_id
-		LEFT JOIN route rt ON rt.id = n.route_id
-		ORDER BY (
-			6371000 * acos(
-				LEAST(1.0, GREATEST(-1.0,
-					cos(radians($2)) * cos(radians(s.lat)) *
-					cos(radians(s.lon) - radians($1)) +
-					sin(radians($2)) * sin(radians(s.lat))
-				))
-			)
-		)
-		LIMIT $3
-	`
-
-	rows, err := r.db.Query(ctx, query, lon, lat, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var nodes []models.Node
-	for rows.Next() {
-		var node models.Node
-		if err := rows.Scan(&node.ID, &node.StopID, &node.StopName, &node.RouteID, &node.RouteName, &node.Mode, &node.Lat, &node.Lon); err != nil {
-			continue
-		}
-		nodes = append(nodes, node)
-	}
-
-	return nodes, nil
-}
-
-// loadEdges loads outgoing edges for a node
-func (r *Router) loadEdges(ctx context.Context, nodeID int64) ([]models.Edge, error) {
-	query := `
-		SELECT id, from_node_id, to_node_id, type, cost_time, cost_walk, cost_transfer
-		FROM edge
-		WHERE from_node_id = $1
-	`
-
-	rows, err := r.db.Query(ctx, query, nodeID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var edges []models.Edge
-	for rows.Next() {
-		var edge models.Edge
-		if err := rows.Scan(&edge.ID, &edge.FromNodeID, &edge.ToNodeID, &edge.Type,
-			&edge.CostTime, &edge.CostWalk, &edge.CostTransfer); err != nil {
-			continue
-		}
-		edges = append(edges, edge)
-	}
-
-	return edges, nil
-}
-
-// getNode retrieves node information
-func (r *Router) getNode(ctx context.Context, nodeID int64) (models.Node, error) {
-	query := `
-		SELECT n.id, n.stop_id, s.name, n.route_id, COALESCE(rt.short_name, rt.long_name, rt.id), n.mode, s.lat, s.lon
-		FROM node n
-		JOIN stop s ON s.id = n.stop_id
-		LEFT JOIN route rt ON rt.id = n.route_id
-		WHERE n.id = $1
-	`
-
-	var node models.Node
-	err := r.db.QueryRow(ctx, query, nodeID).Scan(
-		&node.ID, &node.StopID, &node.StopName, &node.RouteID, &node.RouteName, &node.Mode, &node.Lat, &node.Lon,
-	)
-
-	return node, err
-}
-
 // buildSteps constructs user-friendly step-by-step directions
 // Consolidates consecutive RIDE steps on the same route into a single step
-func (r *Router) buildSteps(nodes []models.Node, edges []models.Edge) []models.Step {
+func buildSteps(nodes []models.Node, edges []models.Edge) []models.Step {
 	if len(nodes) == 0 || len(edges) == 0 {
 		return []models.Step{}
 	}
@@ -310,7 +240,7 @@ func (r *Router) buildSteps(nodes []models.Node, edges []models.Edge) []models.S
 			Mode:         fromNode.Mode,
 			Duration:     edge.CostTime,
 			Distance:     edge.CostWalk,
-			NumStops:     1, // Each edge represents moving through 1 stop
+			NumStops:     1,
 		}
 
 		// Try to consolidate consecutive RIDE steps on the same route
@@ -318,14 +248,12 @@ func (r *Router) buildSteps(nodes []models.Node, edges []models.Edge) []models.S
 			currentStep.Type == models.EdgeRide &&
 			step.Type == models.EdgeRide &&
 			currentStep.Route == step.Route {
-			// Same route, extend the current step
 			currentStep.ToStop = step.ToStop
 			currentStep.ToStopName = step.ToStopName
 			currentStep.Duration += step.Duration
 			currentStep.Distance += step.Distance
-			currentStep.NumStops++ // Increment stop count
+			currentStep.NumStops++
 		} else {
-			// Different type, route, or first step - save current and start new
 			if currentStep != nil {
 				steps = append(steps, *currentStep)
 			}
@@ -333,7 +261,6 @@ func (r *Router) buildSteps(nodes []models.Node, edges []models.Edge) []models.S
 		}
 	}
 
-	// Add the last step
 	if currentStep != nil {
 		steps = append(steps, *currentStep)
 	}
@@ -343,7 +270,7 @@ func (r *Router) buildSteps(nodes []models.Node, edges []models.Edge) []models.S
 
 // haversineDistance calculates distance between two coordinates in meters
 func haversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
-	const earthRadius = 6371000 // meters
+	const earthRadius = 6371000
 
 	lat1Rad := lat1 * math.Pi / 180
 	lat2Rad := lat2 * math.Pi / 180

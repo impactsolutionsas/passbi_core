@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/passbi/passbi_core/internal/cache"
 	"github.com/passbi/passbi_core/internal/db"
 	"github.com/passbi/passbi_core/internal/models"
@@ -57,16 +56,7 @@ func RouteSearch(c *fiber.Ctx) error {
 		})
 	}
 
-	// Get database connection
-	pool, err := db.GetDB()
-	if err != nil {
-		log.Printf("Database error: %v", err)
-		return c.Status(500).JSON(fiber.Map{
-			"error": "internal server error",
-		})
-	}
-
-	// Compute all 3 routes in parallel
+	// Compute all 4 routes in parallel using in-memory graph
 	ctx := c.Context()
 	strategies := routing.GetAllStrategies()
 
@@ -83,7 +73,7 @@ func RouteSearch(c *fiber.Ctx) error {
 		wg.Add(1)
 		go func(strat routing.Strategy) {
 			defer wg.Done()
-			path, err := computeRoute(ctx, pool, fromLat, fromLon, toLat, toLon, strat)
+			path, err := computeRoute(ctx, fromLat, fromLon, toLat, toLon, strat)
 			resultChan <- routeResult{
 				strategy: strat.Name(),
 				path:     path,
@@ -130,7 +120,7 @@ func RouteSearch(c *fiber.Ctx) error {
 }
 
 // computeRoute computes a route with caching
-func computeRoute(ctx context.Context, pool *pgxpool.Pool, fromLat, fromLon, toLat, toLon float64, strategy routing.Strategy) (*models.Path, error) {
+func computeRoute(ctx context.Context, fromLat, fromLon, toLat, toLon float64, strategy routing.Strategy) (*models.Path, error) {
 	// Generate cache key
 	cacheKey := cache.RouteKey(fromLat, fromLon, toLat, toLon, strategy.Name())
 	lockKey := cache.LockKey(cacheKey)
@@ -162,8 +152,8 @@ func computeRoute(ctx context.Context, pool *pgxpool.Pool, fromLat, fromLon, toL
 		}
 	}()
 
-	// Compute route
-	router := routing.NewRouter(pool)
+	// Compute route using in-memory graph (no database queries during routing)
+	router := routing.NewRouter()
 	path, err := router.FindPath(ctx, fromLat, fromLon, toLat, toLon, strategy)
 	if err != nil {
 		return nil, err
@@ -173,7 +163,6 @@ func computeRoute(ctx context.Context, pool *pgxpool.Pool, fromLat, fromLon, toL
 	cacheTTL := 10 * time.Minute
 	if err := cache.SetRoute(ctx, cacheKey, path, cacheTTL); err != nil {
 		log.Printf("Failed to cache route: %v", err)
-		// Don't fail the request if caching fails
 	}
 
 	return path, nil
