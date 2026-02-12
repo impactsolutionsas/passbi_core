@@ -35,16 +35,15 @@ services:
       - key: DB_SSLMODE
         value: require
 
-      # Redis (À CONFIGURER MANUELLEMENT après création du service Redis)
-      # Après avoir créé le service Redis dans le dashboard:
-      # 1. Copier REDIS_PRIVATE_URL depuis le service Redis
-      # 2. Ajouter ces variables dans le service passbi-api
-      # Format attendu: redis://:password@host:port
-      #
-      # REDIS_HOST: copier depuis Redis service
-      # REDIS_PORT: copier depuis Redis service
-      # REDIS_PASSWORD: copier depuis Redis service
-      # REDIS_DB: 0
+      # Redis (Redis Labs - External)
+      - key: REDIS_HOST
+        value: redis-13600.c339.eu-west-3-1.ec2.cloud.redislabs.com
+      - key: REDIS_PORT
+        value: 13600
+      - key: REDIS_PASSWORD
+        value: XQrPtCkQ3Kut00y410VcesVSu5KoJ60o
+      - key: REDIS_DB
+        value: 0
 
       # API Configuration
       - key: API_PORT
@@ -82,9 +81,5 @@ databases:
     plan: free
     postgresMajorVersion: "15"
 
-# NOTE: Redis n'est pas supporté dans les Blueprints Render
-# Vous devez créer Redis manuellement :
-# 1. Dashboard Render → New + → Redis
-# 2. Nom: passbi-redis
-# 3. Plan: Free
-# 4. Puis ajouter les variables REDIS_* dans le service passbi-api
+# NOTE: Redis est configuré avec un service externe (Redis Labs)
+# Aucune création Redis supplémentaire nécessaire sur Render
