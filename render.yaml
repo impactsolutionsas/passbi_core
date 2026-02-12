@@ -12,15 +12,15 @@ services:
     repo: https://github.com/impactsolutionsas/passbi_core
     branch: main
     envVars:
-      # Database (Supabase - External)
+      # Database (Supabase - External - Connection Pooler)
       - key: DB_HOST
-        value: db.xlvuggzprjjkzolonbuh.supabase.co
+        value: aws-1-eu-north-1.pooler.supabase.com
       - key: DB_PORT
-        value: 5432
+        value: 6543
       - key: DB_NAME
         value: postgres
       - key: DB_USER
-        value: postgres
+        value: postgres.xlvuggzprjjkzolonbuh
       - key: DB_PASSWORD
         value: I9YyF1jg7XBuxRrQ
       - key: DB_SSLMODE
