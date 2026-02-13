@@ -181,6 +181,11 @@ func (r *Router) astar(ctx context.Context, startNodes []models.Node, goalSet ma
 
 		// Explore neighbors
 		for _, edge := range neighbors {
+			// Skip walk edges longer than 200m
+			if edge.Type == models.EdgeWalk && edge.CostWalk > 200 {
+				continue
+			}
+
 			// Get neighbor node info from in-memory graph (instant lookup)
 			neighborNode, ok := r.graph.GetNode(edge.ToNodeID)
 			if !ok {
