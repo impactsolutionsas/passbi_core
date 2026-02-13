@@ -54,13 +54,14 @@ func (r *Router) FindPath(ctx context.Context, fromLat, fromLon, toLat, toLon fl
 	}
 
 	// Find candidate start nodes (nearest stops to origin) - in-memory
-	startNodes := r.graph.FindNearestNodes(fromLat, fromLon, 10)
+	// Higher limit to include BRT/TER stops from wider search radius
+	startNodes := r.graph.FindNearestNodes(fromLat, fromLon, 20)
 	if len(startNodes) == 0 {
 		return nil, fmt.Errorf("no start nodes found near origin")
 	}
 
 	// Find candidate goal nodes (nearest stops to destination) - in-memory
-	goalNodes := r.graph.FindNearestNodes(toLat, toLon, 10)
+	goalNodes := r.graph.FindNearestNodes(toLat, toLon, 20)
 	if len(goalNodes) == 0 {
 		return nil, fmt.Errorf("no goal nodes found near destination")
 	}
@@ -180,18 +181,29 @@ func (r *Router) astar(ctx context.Context, startNodes []models.Node, goalSet ma
 
 		// Explore neighbors
 		for _, edge := range neighbors {
+			// Get neighbor node info from in-memory graph (instant lookup)
+			neighborNode, ok := r.graph.GetNode(edge.ToNodeID)
+			if !ok {
+				continue
+			}
+
 			// Calculate tentative gScore
 			edgeCost := strategy.EdgeCost(edge)
+
+			// Mode bonus: BRT/TER rides are cheaper (faster, higher capacity)
+			if edge.Type == models.EdgeRide {
+				switch neighborNode.Mode {
+				case models.ModeTER:
+					edgeCost = edgeCost * 50 / 100 // TER: 50% cost (train is fastest)
+				case models.ModeBRT:
+					edgeCost = edgeCost * 65 / 100 // BRT: 65% cost (dedicated lanes)
+				}
+			}
+
 			tentativeG := current.gScore + edgeCost
 
 			// Check if this is a better path
 			if existingG, ok := bestG[edge.ToNodeID]; ok && tentativeG >= existingG {
-				continue
-			}
-
-			// Get neighbor node info from in-memory graph (instant lookup)
-			neighborNode, ok := r.graph.GetNode(edge.ToNodeID)
-			if !ok {
 				continue
 			}
 
