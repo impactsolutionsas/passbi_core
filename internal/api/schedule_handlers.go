@@ -187,23 +187,16 @@ func StopDepartures(c *fiber.Ctx) error {
 	}
 
 	// Query departures with active service detection
-	// DOW: 0=Sunday, 1=Monday, ..., 6=Saturday
-	dow := int(date.Weekday())
+	// Map Go's Weekday() to the calendar column name
+	dayColumns := [7]string{"sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"}
+	dayCol := dayColumns[date.Weekday()]
 
-	query := `
+	query := fmt.Sprintf(`
 		WITH active_services AS (
 			SELECT DISTINCT c.service_id, c.agency_id
 			FROM calendar c
 			WHERE $2::date BETWEEN c.start_date AND c.end_date
-			  AND CASE $4
-				WHEN 0 THEN c.sunday
-				WHEN 1 THEN c.monday
-				WHEN 2 THEN c.tuesday
-				WHEN 3 THEN c.wednesday
-				WHEN 4 THEN c.thursday
-				WHEN 5 THEN c.friday
-				WHEN 6 THEN c.saturday
-			  END = true
+			  AND c.%s = true
 			  AND NOT EXISTS (
 				SELECT 1 FROM calendar_date cd
 				WHERE cd.service_id = c.service_id
@@ -241,10 +234,10 @@ func StopDepartures(c *fiber.Ctx) error {
 		ORDER BY
 			CASE WHEN a.service_id IS NOT NULL THEN 0 ELSE 1 END,
 			st.departure_seconds
-		LIMIT $5
-	`
+		LIMIT $4
+	`, dayCol)
 
-	rows, err := pool.Query(ctx, query, stopID, date, timeSecs, dow, limit)
+	rows, err := pool.Query(ctx, query, stopID, date, timeSecs, limit)
 	if err != nil {
 		log.Printf("Departures query error: %v", err)
 		return c.Status(500).JSON(fiber.Map{"error": "internal server error"})
