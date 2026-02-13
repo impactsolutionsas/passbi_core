@@ -72,6 +72,7 @@ func main() {
 	app.Get("/health", api.Health)
 	app.Get("/v2/route-search", api.RouteSearch)
 	app.Get("/v2/stops/nearby", api.StopsNearby)
+	app.Get("/v2/stops/search", api.StopsSearch)
 	app.Get("/v2/routes/list", api.RoutesList)
 	app.Get("/v2/stops/:id/departures", api.StopDepartures)
 	app.Get("/v2/routes/:id/schedule", api.RouteSchedule)

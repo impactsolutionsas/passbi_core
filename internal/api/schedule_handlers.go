@@ -193,6 +193,7 @@ func StopDepartures(c *fiber.Ctx) error {
 
 	query := fmt.Sprintf(`
 		WITH active_services AS (
+			-- Tier 1: Valid calendars (date within range + day-of-week match)
 			SELECT DISTINCT c.service_id, c.agency_id
 			FROM calendar c
 			WHERE $2::date BETWEEN c.start_date AND c.end_date
@@ -207,10 +208,31 @@ func StopDepartures(c *fiber.Ctx) error {
 
 			UNION
 
+			-- Tier 2: Expired calendars - match day-of-week only (stale GTFS feeds still running)
+			SELECT DISTINCT c.service_id, c.agency_id
+			FROM calendar c
+			WHERE c.end_date < $2::date
+			  AND c.%s = true
+
+			UNION
+
+			-- Tier 3: calendar_date additions for today
 			SELECT cd.service_id, cd.agency_id
 			FROM calendar_date cd
 			WHERE cd.date = $2::date
 			  AND cd.exception_type = 1
+
+			UNION
+
+			-- Tier 4: Agencies with NO calendar (BRT) - derive DOW from calendar_dates pattern
+			SELECT DISTINCT cd.service_id, cd.agency_id
+			FROM calendar_date cd
+			WHERE cd.exception_type = 1
+			  AND EXTRACT(DOW FROM cd.date) = EXTRACT(DOW FROM $2::date)
+			  AND NOT EXISTS (
+				SELECT 1 FROM calendar c
+				WHERE c.service_id = cd.service_id AND c.agency_id = cd.agency_id
+			  )
 		)
 		SELECT
 			st.departure_time,
@@ -235,7 +257,7 @@ func StopDepartures(c *fiber.Ctx) error {
 			CASE WHEN a.service_id IS NOT NULL THEN 0 ELSE 1 END,
 			st.departure_seconds
 		LIMIT $4
-	`, dayCol)
+	`, dayCol, dayCol)
 
 	rows, err := pool.Query(ctx, query, stopID, date, timeSecs, limit)
 	if err != nil {
