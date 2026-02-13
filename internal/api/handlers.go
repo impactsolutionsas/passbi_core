@@ -236,15 +236,25 @@ type NearbyStopsResponse struct {
 	Stops []NearbyStop `json:"stops"`
 }
 
+// NearbyRouteInfo represents a route serving a nearby stop
+type NearbyRouteInfo struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Mode       string `json:"mode"`
+	AgencyID   string `json:"agency_id"`
+	AgencyName string `json:"agency_name"`
+}
+
 // NearbyStop represents a nearby stop with its routes
 type NearbyStop struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"name"`
-	Lat           float64  `json:"lat"`
-	Lon           float64  `json:"lon"`
-	DistanceM     int      `json:"distance_meters"`
-	Routes        []string `json:"routes"`
-	RoutesCount   int      `json:"routes_count"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Lat           float64           `json:"lat"`
+	Lon           float64           `json:"lon"`
+	DistanceM     int               `json:"distance_meters"`
+	Modes         []string          `json:"modes"`
+	Routes        []NearbyRouteInfo `json:"routes"`
+	RoutesCount   int               `json:"routes_count"`
 }
 
 // StopsNearby handles the /v2/stops/nearby endpoint
@@ -292,7 +302,7 @@ func StopsNearby(c *fiber.Ctx) error {
 
 	ctx := c.Context()
 
-	// Query nearby stops with their routes (using Haversine formula)
+	// Query nearby stops with their routes, modes, and agency info
 	query := `
 		WITH stop_distances AS (
 			SELECT
@@ -326,17 +336,14 @@ func StopsNearby(c *fiber.Ctx) error {
 			sd.lat,
 			sd.lon,
 			sd.distance,
-			COALESCE(
-				array_agg(DISTINCT COALESCE(r.short_name, r.long_name, r.id))
-				FILTER (WHERE r.id IS NOT NULL),
-				ARRAY[]::text[]
-			) AS routes
+			r.id AS route_id,
+			COALESCE(r.short_name, r.long_name, r.id) AS route_name,
+			r.mode,
+			r.agency_id
 		FROM stop_distances sd
 		LEFT JOIN node n ON n.stop_id = sd.id
 		LEFT JOIN route r ON r.id = n.route_id
-		GROUP BY sd.id, sd.name, sd.lat, sd.lon, sd.distance
-		ORDER BY sd.distance
-		LIMIT 20
+		ORDER BY sd.distance, r.mode, r.id
 	`
 
 	rows, err := pool.Query(ctx, query, lon, lat, radius)
@@ -348,19 +355,73 @@ func StopsNearby(c *fiber.Ctx) error {
 	}
 	defer rows.Close()
 
-	var stops []NearbyStop
-	for rows.Next() {
-		var stop NearbyStop
-		var routes []string
+	// Group results by stop
+	type stopRow struct {
+		id, name                         string
+		lat, lon                         float64
+		distanceM                        int
+		routeID, routeName, mode, agency *string
+	}
 
-		if err := rows.Scan(&stop.ID, &stop.Name, &stop.Lat, &stop.Lon, &stop.DistanceM, &routes); err != nil {
+	stopOrder := []string{}
+	stopMap := make(map[string]*NearbyStop)
+
+	for rows.Next() {
+		var r stopRow
+		if err := rows.Scan(&r.id, &r.name, &r.lat, &r.lon, &r.distanceM,
+			&r.routeID, &r.routeName, &r.mode, &r.agency); err != nil {
 			log.Printf("Scan error: %v", err)
 			continue
 		}
 
-		stop.Routes = routes
-		stop.RoutesCount = len(routes)
-		stops = append(stops, stop)
+		stop, exists := stopMap[r.id]
+		if !exists {
+			stop = &NearbyStop{
+				ID:        r.id,
+				Name:      r.name,
+				Lat:       r.lat,
+				Lon:       r.lon,
+				DistanceM: r.distanceM,
+				Routes:    []NearbyRouteInfo{},
+				Modes:     []string{},
+			}
+			stopMap[r.id] = stop
+			stopOrder = append(stopOrder, r.id)
+		}
+
+		if r.routeID != nil {
+			agencyName := agencyDisplayName(*r.agency)
+			stop.Routes = append(stop.Routes, NearbyRouteInfo{
+				ID:         *r.routeID,
+				Name:       *r.routeName,
+				Mode:       *r.mode,
+				AgencyID:   *r.agency,
+				AgencyName: agencyName,
+			})
+			// Track unique modes
+			modeStr := *r.mode
+			found := false
+			for _, m := range stop.Modes {
+				if m == modeStr {
+					found = true
+					break
+				}
+			}
+			if !found {
+				stop.Modes = append(stop.Modes, modeStr)
+			}
+		}
+	}
+
+	// Build ordered result (limit 20 stops)
+	var stops []NearbyStop
+	for i, id := range stopOrder {
+		if i >= 20 {
+			break
+		}
+		s := stopMap[id]
+		s.RoutesCount = len(s.Routes)
+		stops = append(stops, *s)
 	}
 
 	if stops == nil {
@@ -483,4 +544,21 @@ func RoutesList(c *fiber.Ctx) error {
 		Routes: routes,
 		Total:  len(routes),
 	})
+}
+
+// agencyDisplayName maps agency_id patterns to human-readable names
+func agencyDisplayName(agencyID string) string {
+	upper := strings.ToUpper(agencyID)
+	switch {
+	case strings.Contains(upper, "AFTU"):
+		return "AFTU"
+	case strings.Contains(upper, "DDD") || strings.Contains(upper, "DEM"):
+		return "Dem Dikk"
+	case strings.Contains(upper, "BRT"):
+		return "BRT Dakar"
+	case strings.Contains(upper, "TER"):
+		return "TER (Train Express Régional)"
+	default:
+		return agencyID
+	}
 }

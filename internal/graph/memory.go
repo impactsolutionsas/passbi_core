@@ -138,57 +138,91 @@ func (g *InMemoryGraph) GetEdges(nodeID int64) []models.Edge {
 }
 
 // FindNearestNodes finds the N nearest nodes to coordinates using in-memory search
+// BRT/TER stops are searched within a wider radius (2km) to prioritize mass transit
 func (g *InMemoryGraph) FindNearestNodes(lat, lon float64, limit int) []models.Node {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	type nodeWithDist struct {
-		node models.Node
-		dist float64
+	// Find nearest stops, with mode awareness
+	type stopInfo struct {
+		stopID    string
+		dist      float64
+		hasMassTransit bool // true if stop has BRT or TER nodes
 	}
 
-	// Find nearest stops first (deduplicate by stop)
-	stopDists := make(map[string]float64)
+	stopMap := make(map[string]*stopInfo)
 	for _, node := range g.Nodes {
-		if _, seen := stopDists[node.StopID]; seen {
-			continue
+		si, seen := stopMap[node.StopID]
+		if !seen {
+			dist := haversineDistanceFast(lat, lon, node.Lat, node.Lon)
+			si = &stopInfo{stopID: node.StopID, dist: dist}
+			stopMap[node.StopID] = si
 		}
-		dist := haversineDistanceFast(lat, lon, node.Lat, node.Lon)
-		stopDists[node.StopID] = dist
-	}
-
-	// Get closest stops
-	type stopWithDist struct {
-		stopID string
-		dist   float64
-	}
-	var closestStops []stopWithDist
-	for stopID, dist := range stopDists {
-		if dist <= 1000 { // Only consider stops within 1km
-			closestStops = append(closestStops, stopWithDist{stopID, dist})
+		if node.Mode == models.ModeBRT || node.Mode == models.ModeTER {
+			si.hasMassTransit = true
 		}
 	}
 
-	// Sort by distance
-	for i := 0; i < len(closestStops); i++ {
-		for j := i + 1; j < len(closestStops); j++ {
-			if closestStops[j].dist < closestStops[i].dist {
-				closestStops[i], closestStops[j] = closestStops[j], closestStops[i]
+	// Separate mass transit vs regular stops with different radii
+	var massTransitStops []stopInfo // BRT/TER - wider radius
+	var regularStops []stopInfo     // BUS - standard radius
+
+	for _, si := range stopMap {
+		if si.hasMassTransit && si.dist <= 2000 {
+			// BRT/TER stops: 2km radius
+			massTransitStops = append(massTransitStops, *si)
+		} else if si.dist <= 1000 {
+			// Regular stops: 1km radius
+			regularStops = append(regularStops, *si)
+		}
+	}
+
+	// Sort each group by distance
+	sortStops := func(stops []stopInfo) {
+		for i := 0; i < len(stops); i++ {
+			for j := i + 1; j < len(stops); j++ {
+				if stops[j].dist < stops[i].dist {
+					stops[i], stops[j] = stops[j], stops[i]
+				}
 			}
 		}
 	}
+	sortStops(massTransitStops)
+	sortStops(regularStops)
 
-	// Limit number of stops to consider
-	maxStops := 3
-	if maxStops > len(closestStops) {
-		maxStops = len(closestStops)
+	// Take top mass transit stops (up to 2) + top regular stops (up to 3)
+	maxMassTransit := 2
+	if maxMassTransit > len(massTransitStops) {
+		maxMassTransit = len(massTransitStops)
 	}
-	closestStops = closestStops[:maxStops]
+	maxRegular := 3
+	if maxRegular > len(regularStops) {
+		maxRegular = len(regularStops)
+	}
 
-	// Collect all nodes from closest stops
+	// Collect selected stops (mass transit first for priority)
+	selectedStops := make(map[string]bool)
+	var orderedStopIDs []string
+
+	for i := 0; i < maxMassTransit; i++ {
+		sid := massTransitStops[i].stopID
+		if !selectedStops[sid] {
+			selectedStops[sid] = true
+			orderedStopIDs = append(orderedStopIDs, sid)
+		}
+	}
+	for i := 0; i < maxRegular; i++ {
+		sid := regularStops[i].stopID
+		if !selectedStops[sid] {
+			selectedStops[sid] = true
+			orderedStopIDs = append(orderedStopIDs, sid)
+		}
+	}
+
+	// Collect all nodes from selected stops
 	var result []models.Node
-	for _, s := range closestStops {
-		for _, nodeID := range g.StopNodes[s.stopID] {
+	for _, stopID := range orderedStopIDs {
+		for _, nodeID := range g.StopNodes[stopID] {
 			if node, ok := g.Nodes[nodeID]; ok {
 				result = append(result, node)
 			}
