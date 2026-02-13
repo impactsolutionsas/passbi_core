@@ -55,12 +55,16 @@ See [Routing Strategies Guide](guides/routing-strategies.md) for details.
 
 ### Endpoints
 
-| Endpoint | Purpose | Documentation |
-|----------|---------|---------------|
-| `GET /health` | Check API health | [OpenAPI](api/openapi.yaml#L46) |
-| `GET /v2/route-search` | Find routes between two points | [OpenAPI](api/openapi.yaml#L76) |
-| `GET /v2/stops/nearby` | Find stops near a location | [OpenAPI](api/openapi.yaml#L250) |
-| `GET /v2/routes/list` | List all available routes | [OpenAPI](api/openapi.yaml#L347) |
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /health` | Check API health |
+| `GET /v2/route-search` | Find routes between two points (with ETAs) |
+| `GET /v2/stops/nearby` | Find stops near a location |
+| `GET /v2/stops/search` | Search stops by name |
+| `GET /v2/routes/list` | List all available routes |
+| `GET /v2/stops/:id/departures` | Upcoming departures at a stop |
+| `GET /v2/routes/:id/schedule` | Route timetable |
+| `GET /v2/routes/:id/trips` | Route trip details |
 
 ---
 
@@ -147,7 +151,7 @@ curl "http://localhost:8080/v2/routes/list?mode=BUS&limit=10"
 
 **Development:** `http://localhost:8080`
 
-**Production:** `https://api.passbi.com` (example)
+**Production:** `https://passbi-api.onrender.com`
 
 ### Quick Reference
 
@@ -160,10 +164,10 @@ Returns API health status and dependency checks.
 
 #### Route Search
 ```bash
-GET /v2/route-search?from=LAT,LON&to=LAT,LON
+GET /v2/route-search?from=LAT,LON&to=LAT,LON&time=HH:MM
 ```
 
-Find routes between two coordinates. Returns up to 4 strategies.
+Find routes between two coordinates. Returns up to 4 strategies with ETAs.
 
 #### Nearby Stops
 ```bash
@@ -172,12 +176,40 @@ GET /v2/stops/nearby?lat=LAT&lon=LON&radius=METERS
 
 Find transit stops within radius (max 20 results).
 
+#### Stop Search
+```bash
+GET /v2/stops/search?q=QUERY&limit=10
+```
+
+Search stops by name (case-insensitive, relevance-ranked).
+
 #### Routes List
 ```bash
 GET /v2/routes/list?mode=MODE&limit=LIMIT
 ```
 
 List available transit routes with optional filtering.
+
+#### Stop Departures
+```bash
+GET /v2/stops/:id/departures?time=HH:MM&date=YYYY-MM-DD
+```
+
+Upcoming departures at a stop (2-hour window).
+
+#### Route Schedule
+```bash
+GET /v2/routes/:id/schedule?direction=0
+```
+
+Full timetable for a route.
+
+#### Route Trips
+```bash
+GET /v2/routes/:id/trips?direction=0&limit=20
+```
+
+Individual trip details with stop-by-stop times.
 
 ---
 

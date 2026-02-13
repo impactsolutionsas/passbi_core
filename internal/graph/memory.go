@@ -138,7 +138,7 @@ func (g *InMemoryGraph) GetEdges(nodeID int64) []models.Edge {
 }
 
 // FindNearestNodes finds the N nearest nodes to coordinates using in-memory search
-// BRT/TER stops are searched within a wider radius (2km) to prioritize mass transit
+// All stops (including BRT/TER) are searched within a 500m radius
 func (g *InMemoryGraph) FindNearestNodes(lat, lon float64, limit int) []models.Node {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -163,16 +163,17 @@ func (g *InMemoryGraph) FindNearestNodes(lat, lon float64, limit int) []models.N
 		}
 	}
 
-	// Separate mass transit vs regular stops with different radii
-	var massTransitStops []stopInfo // BRT/TER - wider radius
-	var regularStops []stopInfo     // BUS - standard radius
+	// Separate mass transit vs regular stops (same 500m radius)
+	var massTransitStops []stopInfo // BRT/TER
+	var regularStops []stopInfo     // BUS
 
 	for _, si := range stopMap {
-		if si.hasMassTransit && si.dist <= 2000 {
-			// BRT/TER stops: 2km radius
+		if si.dist > 500 {
+			continue // Skip stops beyond 500m
+		}
+		if si.hasMassTransit {
 			massTransitStops = append(massTransitStops, *si)
-		} else if si.dist <= 1000 {
-			// Regular stops: 1km radius
+		} else {
 			regularStops = append(regularStops, *si)
 		}
 	}

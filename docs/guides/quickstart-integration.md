@@ -475,15 +475,20 @@ A: No rate limiting is currently enforced, but please be respectful and implemen
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/health` | GET | Check API health |
-| `/v2/route-search` | GET | Find routes between two points |
+| `/v2/route-search` | GET | Find routes between two points (with ETAs) |
 | `/v2/stops/nearby` | GET | Find stops near a location |
+| `/v2/stops/search` | GET | Search stops by name |
 | `/v2/routes/list` | GET | List all available routes |
+| `/v2/stops/:id/departures` | GET | Upcoming departures at a stop |
+| `/v2/routes/:id/schedule` | GET | Route timetable |
+| `/v2/routes/:id/trips` | GET | Route trip details |
 
 ### Parameters
 
 **Route Search:**
 - `from`: Origin coordinates as `"lat,lon"`
 - `to`: Destination coordinates as `"lat,lon"`
+- `time`: Departure time as `"HH:MM"` (optional, default: current UTC time)
 
 **Nearby Stops:**
 - `lat`: Latitude (number)
