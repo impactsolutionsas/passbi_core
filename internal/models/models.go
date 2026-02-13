@@ -150,6 +150,27 @@ type GTFSStopTime struct {
 	StopSequence int
 }
 
+// GTFSCalendar represents a service from calendar.txt
+type GTFSCalendar struct {
+	ServiceID string
+	Monday    bool
+	Tuesday   bool
+	Wednesday bool
+	Thursday  bool
+	Friday    bool
+	Saturday  bool
+	Sunday    bool
+	StartDate string // YYYYMMDD format from GTFS
+	EndDate   string // YYYYMMDD format from GTFS
+}
+
+// GTFSCalendarDate represents an exception from calendar_dates.txt
+type GTFSCalendarDate struct {
+	ServiceID     string
+	Date          string // YYYYMMDD format from GTFS
+	ExceptionType int    // 1=service added, 2=service removed
+}
+
 // ImportLog represents a GTFS import operation log
 type ImportLog struct {
 	ID          int64

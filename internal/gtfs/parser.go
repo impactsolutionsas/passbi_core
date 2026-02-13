@@ -16,11 +16,13 @@ import (
 
 // GTFSFeed represents a parsed GTFS feed
 type GTFSFeed struct {
-	Agencies  []models.GTFSAgency
-	Stops     []models.GTFSStop
-	Routes    []models.GTFSRoute
-	Trips     []models.GTFSTrip
-	StopTimes []models.GTFSStopTime
+	Agencies      []models.GTFSAgency
+	Stops         []models.GTFSStop
+	Routes        []models.GTFSRoute
+	Trips         []models.GTFSTrip
+	StopTimes     []models.GTFSStopTime
+	Calendars     []models.GTFSCalendar
+	CalendarDates []models.GTFSCalendarDate
 }
 
 // ParseGTFSZip extracts and parses a GTFS ZIP file
@@ -79,6 +81,22 @@ func ParseGTFSZip(zipPath string) (*GTFSFeed, error) {
 	}
 	feed.StopTimes = stopTimes
 	log.Printf("Parsed %d stop_times", len(stopTimes))
+
+	// Parse calendar (optional)
+	if calendars, err := ParseCalendar(filepath.Join(tempDir, "calendar.txt")); err == nil {
+		feed.Calendars = calendars
+		log.Printf("Parsed %d calendar entries", len(calendars))
+	} else {
+		log.Printf("Warning: failed to parse calendar: %v", err)
+	}
+
+	// Parse calendar_dates (optional)
+	if calDates, err := ParseCalendarDates(filepath.Join(tempDir, "calendar_dates.txt")); err == nil {
+		feed.CalendarDates = calDates
+		log.Printf("Parsed %d calendar_dates entries", len(calDates))
+	} else {
+		log.Printf("Warning: failed to parse calendar_dates: %v", err)
+	}
 
 	return feed, nil
 }
@@ -388,6 +406,124 @@ func getField(record []string, colMap map[string]int, fieldName string) string {
 		return strings.TrimSpace(record[idx])
 	}
 	return ""
+}
+
+// ParseCalendar parses calendar.txt
+func ParseCalendar(filePath string) ([]models.GTFSCalendar, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	csvReader := csv.NewReader(file)
+	csvReader.TrimLeadingSpace = true
+
+	header, err := csvReader.Read()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read header: %w", err)
+	}
+
+	colMap := makeColumnMap(header)
+	var calendars []models.GTFSCalendar
+
+	for {
+		record, err := csvReader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("Warning: skipping malformed calendar row: %v", err)
+			continue
+		}
+
+		serviceID := getField(record, colMap, "service_id")
+		if serviceID == "" {
+			continue
+		}
+
+		cal := models.GTFSCalendar{
+			ServiceID: serviceID,
+			Monday:    getField(record, colMap, "monday") == "1",
+			Tuesday:   getField(record, colMap, "tuesday") == "1",
+			Wednesday: getField(record, colMap, "wednesday") == "1",
+			Thursday:  getField(record, colMap, "thursday") == "1",
+			Friday:    getField(record, colMap, "friday") == "1",
+			Saturday:  getField(record, colMap, "saturday") == "1",
+			Sunday:    getField(record, colMap, "sunday") == "1",
+			StartDate: getField(record, colMap, "start_date"),
+			EndDate:   getField(record, colMap, "end_date"),
+		}
+
+		calendars = append(calendars, cal)
+	}
+
+	return calendars, nil
+}
+
+// ParseCalendarDates parses calendar_dates.txt
+// Handles semicolon-delimited headers (AFTU/Dem Dikk data quality issue)
+func ParseCalendarDates(filePath string) ([]models.GTFSCalendarDate, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	csvReader := csv.NewReader(file)
+	csvReader.TrimLeadingSpace = true
+
+	header, err := csvReader.Read()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read header: %w", err)
+	}
+
+	// Handle semicolon-delimited headers (AFTU/Dem_Dikk data quality issue)
+	// Header uses ";" but data rows use "," — after fixing the header,
+	// we must tell the CSV reader to expect 3 fields per row
+	if len(header) == 1 && strings.Contains(header[0], ";") {
+		header = strings.Split(header[0], ";")
+		for i := range header {
+			header[i] = strings.TrimSpace(header[i])
+		}
+		csvReader.FieldsPerRecord = len(header)
+	}
+
+	colMap := makeColumnMap(header)
+	var calDates []models.GTFSCalendarDate
+
+	for {
+		record, err := csvReader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("Warning: skipping malformed calendar_dates row: %v", err)
+			continue
+		}
+
+		serviceID := getField(record, colMap, "service_id")
+		date := getField(record, colMap, "date")
+		exTypeStr := getField(record, colMap, "exception_type")
+
+		if serviceID == "" || date == "" || exTypeStr == "" {
+			continue
+		}
+
+		exType, err := strconv.Atoi(exTypeStr)
+		if err != nil {
+			log.Printf("Warning: invalid exception_type for service %s: %v", serviceID, err)
+			continue
+		}
+
+		calDates = append(calDates, models.GTFSCalendarDate{
+			ServiceID:     serviceID,
+			Date:          date,
+			ExceptionType: exType,
+		})
+	}
+
+	return calDates, nil
 }
 
 func extractZip(zipPath, destDir string) error {

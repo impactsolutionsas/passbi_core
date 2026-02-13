@@ -241,6 +241,48 @@ func Stats(ctx context.Context) (map[string]interface{}, error) {
 	}, nil
 }
 
+// GetJSON retrieves a cached JSON value
+func GetJSON(ctx context.Context, key string, dest interface{}) error {
+	c, err := GetClient()
+	if err != nil {
+		return err
+	}
+
+	data, err := c.Get(ctx, key).Bytes()
+	if err != nil {
+		return err
+	}
+
+	return json.Unmarshal(data, dest)
+}
+
+// SetJSON caches a value as JSON
+func SetJSON(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+	c, err := GetClient()
+	if err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+
+	return c.Set(ctx, key, data, ttl).Err()
+}
+
+// DeparturesKey generates cache key for stop departures
+func DeparturesKey(stopID string, date string, timeSeconds int) string {
+	// Round time to 5-minute buckets for cache efficiency
+	bucket := (timeSeconds / 300) * 300
+	return fmt.Sprintf("dep:%s:%s:%d", stopID, date, bucket)
+}
+
+// ScheduleKey generates cache key for route schedule
+func ScheduleKey(routeID string, direction string, serviceID string) string {
+	return fmt.Sprintf("sched:%s:%s:%s", routeID, direction, serviceID)
+}
+
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
