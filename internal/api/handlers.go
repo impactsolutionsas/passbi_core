@@ -18,7 +18,8 @@ import (
 
 // RouteSearchResponse is the API response structure
 type RouteSearchResponse struct {
-	Routes map[string]*RouteResult `json:"routes"`
+	Routes        map[string]*RouteResult `json:"routes"`
+	DepartureTime string                  `json:"departure_time"`
 }
 
 // RouteResult represents a single route option
@@ -26,6 +27,7 @@ type RouteResult struct {
 	DurationSeconds int           `json:"duration_seconds"`
 	WalkDistanceM   int           `json:"walk_distance_meters"`
 	Transfers       int           `json:"transfers"`
+	ArrivalTime     string        `json:"arrival_time"`
 	Steps           []models.Step `json:"steps"`
 }
 
@@ -54,6 +56,22 @@ func RouteSearch(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{
 			"error": fmt.Sprintf("invalid 'to' coordinates: %v", err),
 		})
+	}
+
+	// Parse departure time (default: now, Dakar = UTC+0)
+	now := time.Now().UTC()
+	var baseTimeSecs int
+	timeStr := c.Query("time")
+	if timeStr != "" {
+		parts := strings.Split(timeStr, ":")
+		if len(parts) >= 2 {
+			h, _ := strconv.Atoi(parts[0])
+			m, _ := strconv.Atoi(parts[1])
+			baseTimeSecs = h*3600 + m*60
+		}
+	} else {
+		baseTimeSecs = now.Hour()*3600 + now.Minute()*60 + now.Second()
+		timeStr = now.Format("15:04")
 	}
 
 	// Compute all 4 routes in parallel using in-memory graph
@@ -98,10 +116,14 @@ func RouteSearch(c *fiber.Ctx) error {
 		}
 
 		if result.path != nil {
+			enrichStepsWithTimes(result.path.Steps, baseTimeSecs)
+			arrivalSecs := baseTimeSecs + result.path.TotalTime
+
 			routes[result.strategy] = &RouteResult{
 				DurationSeconds: result.path.TotalTime,
 				WalkDistanceM:   result.path.TotalWalk,
 				Transfers:       result.path.Transfers,
+				ArrivalTime:     formatSecondsToTime(arrivalSecs),
 				Steps:           result.path.Steps,
 			}
 		}
@@ -115,7 +137,8 @@ func RouteSearch(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(RouteSearchResponse{
-		Routes: routes,
+		Routes:        routes,
+		DepartureTime: timeStr,
 	})
 }
 
@@ -544,6 +567,115 @@ func RoutesList(c *fiber.Ctx) error {
 		Routes: routes,
 		Total:  len(routes),
 	})
+}
+
+// StopSearchResult represents a stop in search results
+type StopSearchResult struct {
+	ID   string  `json:"id"`
+	Name string  `json:"name"`
+	Lat  float64 `json:"lat"`
+	Lon  float64 `json:"lon"`
+}
+
+// StopsSearch handles GET /v2/stops/search?q=petersen&limit=10
+func StopsSearch(c *fiber.Ctx) error {
+	query := c.Query("q")
+	if query == "" || len(query) < 2 {
+		return c.Status(400).JSON(fiber.Map{
+			"error": "query parameter 'q' is required (minimum 2 characters)",
+		})
+	}
+
+	limit, _ := strconv.Atoi(c.Query("limit", "10"))
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+
+	// Escape ILIKE special characters
+	sanitized := strings.ReplaceAll(query, "%", "\\%")
+	sanitized = strings.ReplaceAll(sanitized, "_", "\\_")
+	pattern := "%" + sanitized + "%"
+
+	pool, err := db.GetDB()
+	if err != nil {
+		log.Printf("Database error: %v", err)
+		return c.Status(500).JSON(fiber.Map{"error": "internal server error"})
+	}
+
+	rows, err := pool.Query(c.Context(), `
+		SELECT id, name, lat, lon
+		FROM stop
+		WHERE name ILIKE $1
+		ORDER BY
+			CASE WHEN lower(name) = lower($2) THEN 0
+				 WHEN lower(name) LIKE lower($2) || '%' THEN 1
+				 ELSE 2
+			END,
+			name
+		LIMIT $3
+	`, pattern, query, limit)
+	if err != nil {
+		log.Printf("Stop search query error: %v", err)
+		return c.Status(500).JSON(fiber.Map{"error": "internal server error"})
+	}
+	defer rows.Close()
+
+	var stops []StopSearchResult
+	for rows.Next() {
+		var s StopSearchResult
+		if err := rows.Scan(&s.ID, &s.Name, &s.Lat, &s.Lon); err != nil {
+			log.Printf("Scan error: %v", err)
+			continue
+		}
+		stops = append(stops, s)
+	}
+
+	if stops == nil {
+		stops = []StopSearchResult{}
+	}
+
+	return c.JSON(fiber.Map{
+		"stops": stops,
+		"query": query,
+		"total": len(stops),
+	})
+}
+
+// enrichStepsWithTimes adds departure/arrival timestamps and agency names to steps
+func enrichStepsWithTimes(steps []models.Step, baseTimeSecs int) {
+	currentSecs := baseTimeSecs
+	for i := range steps {
+		steps[i].DepartureTime = formatSecondsToTime(currentSecs)
+		arrivalSecs := currentSecs + steps[i].Duration
+		steps[i].ArrivalTime = formatSecondsToTime(arrivalSecs)
+		if steps[i].Type == models.EdgeRide && steps[i].Route != "" {
+			steps[i].AgencyName = inferAgencyFromRoute(steps[i].Route)
+		}
+		currentSecs = arrivalSecs
+	}
+}
+
+// formatSecondsToTime converts seconds since midnight to "HH:MM" string
+func formatSecondsToTime(secs int) string {
+	secs = secs % 86400
+	h := secs / 3600
+	m := (secs % 3600) / 60
+	return fmt.Sprintf("%02d:%02d", h, m)
+}
+
+// inferAgencyFromRoute derives agency name from route ID patterns
+func inferAgencyFromRoute(routeID string) string {
+	upper := strings.ToUpper(routeID)
+	switch {
+	case strings.Contains(upper, "AFTU"):
+		return "AFTU"
+	case strings.Contains(upper, "DDD") || strings.Contains(upper, "DEM"):
+		return "Dem Dikk"
+	case strings.HasPrefix(upper, "B") && len(routeID) <= 3:
+		return "BRT Dakar"
+	default:
+		return agencyDisplayName(routeID)
+	}
 }
 
 // agencyDisplayName maps agency_id patterns to human-readable names

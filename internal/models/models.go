@@ -90,18 +90,21 @@ type StopInfo struct {
 
 // Step represents one segment of a journey
 type Step struct {
-	Type         EdgeType    `json:"type"`
-	FromStop     string      `json:"from_stop"`
-	ToStop       string      `json:"to_stop"`
-	FromStopName string      `json:"from_stop_name"`
-	ToStopName   string      `json:"to_stop_name"`
-	Route        string      `json:"route,omitempty"`
-	RouteName    string      `json:"route_name,omitempty"`
-	Mode         TransitMode `json:"mode,omitempty"`
-	Duration     int         `json:"duration_seconds"`
-	Distance     int         `json:"distance_meters,omitempty"`
-	NumStops     int         `json:"num_stops,omitempty"`
-	Stops        []StopInfo  `json:"stops,omitempty"` // Intermediate stops for RIDE steps
+	Type          EdgeType    `json:"type"`
+	FromStop      string      `json:"from_stop"`
+	ToStop        string      `json:"to_stop"`
+	FromStopName  string      `json:"from_stop_name"`
+	ToStopName    string      `json:"to_stop_name"`
+	Route         string      `json:"route,omitempty"`
+	RouteName     string      `json:"route_name,omitempty"`
+	Mode          TransitMode `json:"mode,omitempty"`
+	Duration      int         `json:"duration_seconds"`
+	Distance      int         `json:"distance_meters,omitempty"`
+	NumStops      int         `json:"num_stops,omitempty"`
+	Stops         []StopInfo  `json:"stops,omitempty"`
+	DepartureTime string      `json:"departure_time,omitempty"`
+	ArrivalTime   string      `json:"arrival_time,omitempty"`
+	AgencyName    string      `json:"agency_name,omitempty"`
 }
 
 // GTFS data structures for import
