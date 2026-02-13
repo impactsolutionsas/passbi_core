@@ -73,6 +73,9 @@ func main() {
 	app.Get("/v2/route-search", api.RouteSearch)
 	app.Get("/v2/stops/nearby", api.StopsNearby)
 	app.Get("/v2/routes/list", api.RoutesList)
+	app.Get("/v2/stops/:id/departures", api.StopDepartures)
+	app.Get("/v2/routes/:id/schedule", api.RouteSchedule)
+	app.Get("/v2/routes/:id/trips", api.RouteTrips)
 
 	// 404 handler
 	app.Use(func(c *fiber.Ctx) error {

@@ -132,6 +132,9 @@ func main() {
 	v2.Get("/route-search", api.RouteSearch)
 	v2.Get("/stops/nearby", api.StopsNearby)
 	v2.Get("/routes/list", api.RoutesList)
+	v2.Get("/stops/:id/departures", api.StopDepartures)
+	v2.Get("/routes/:id/schedule", api.RouteSchedule)
+	v2.Get("/routes/:id/trips", api.RouteTrips)
 
 	// ============================================
 	// Partner Dashboard API

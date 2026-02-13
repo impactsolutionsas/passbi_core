@@ -114,9 +114,30 @@ func runImport(ctx context.Context, pool *pgxpool.Pool, agencyID, gtfsPath strin
 		return fmt.Errorf("failed to import routes: %w", err)
 	}
 
+	// Import trips
+	if err := importTrips(ctx, tx, agencyID, feed.Trips); err != nil {
+		return fmt.Errorf("failed to import trips: %w", err)
+	}
+
+	// Import calendar
+	if err := importCalendar(ctx, tx, agencyID, feed.Calendars); err != nil {
+		return fmt.Errorf("failed to import calendar: %w", err)
+	}
+
+	// Import calendar_dates
+	if err := importCalendarDates(ctx, tx, agencyID, feed.CalendarDates); err != nil {
+		return fmt.Errorf("failed to import calendar_dates: %w", err)
+	}
+
 	// Commit transaction
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	// Import stop_times in separate chunked transactions (too large for single tx)
+	log.Printf("Step 4b/5: Importing %d stop_times...", len(feed.StopTimes))
+	if err := importStopTimesChunked(ctx, pool, agencyID, feed.StopTimes); err != nil {
+		return fmt.Errorf("failed to import stop_times: %w", err)
 	}
 
 	// Build graph (if requested)
@@ -234,4 +255,209 @@ func importRoutes(ctx context.Context, tx pgx.Tx, agencyID string, routes []mode
 
 	log.Printf("Imported %d routes", len(routes))
 	return nil
+}
+
+func importTrips(ctx context.Context, tx pgx.Tx, agencyID string, trips []models.GTFSTrip) error {
+	if len(trips) == 0 {
+		log.Println("No trips to import")
+		return nil
+	}
+
+	batch := &pgx.Batch{}
+	count := 0
+
+	for _, trip := range trips {
+		batch.Queue(`
+			INSERT INTO trip (trip_id, agency_id, route_id, service_id, headsign, direction)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (agency_id, trip_id) DO UPDATE
+			SET route_id = EXCLUDED.route_id,
+			    service_id = EXCLUDED.service_id,
+			    headsign = EXCLUDED.headsign,
+			    direction = EXCLUDED.direction
+		`, trip.TripID, agencyID, trip.RouteID, trip.ServiceID, trip.Headsign, trip.Direction)
+
+		count++
+		if batch.Len() >= 1000 {
+			results := tx.SendBatch(ctx, batch)
+			for i := 0; i < batch.Len(); i++ {
+				if _, err := results.Exec(); err != nil {
+					results.Close()
+					return fmt.Errorf("failed to insert trip batch at %d: %w", count, err)
+				}
+			}
+			results.Close()
+			batch = &pgx.Batch{}
+		}
+	}
+
+	if batch.Len() > 0 {
+		results := tx.SendBatch(ctx, batch)
+		for i := 0; i < batch.Len(); i++ {
+			if _, err := results.Exec(); err != nil {
+				results.Close()
+				return fmt.Errorf("failed to insert trip final batch: %w", err)
+			}
+		}
+		results.Close()
+	}
+
+	log.Printf("Imported %d trips", count)
+	return nil
+}
+
+func importStopTimesChunked(ctx context.Context, pool *pgxpool.Pool, agencyID string, stopTimes []models.GTFSStopTime) error {
+	if len(stopTimes) == 0 {
+		log.Println("No stop_times to import")
+		return nil
+	}
+
+	chunkSize := 50000
+	total := len(stopTimes)
+
+	for start := 0; start < total; start += chunkSize {
+		end := start + chunkSize
+		if end > total {
+			end = total
+		}
+		chunk := stopTimes[start:end]
+
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to begin tx at offset %d: %w", start, err)
+		}
+
+		batch := &pgx.Batch{}
+		for _, st := range chunk {
+			arrSec, _ := gtfs.ParseTimeToSeconds(st.ArrivalTime)
+			depSec, _ := gtfs.ParseTimeToSeconds(st.DepartureTime)
+
+			batch.Queue(`
+				INSERT INTO stop_time (trip_id, agency_id, stop_id, stop_sequence,
+					arrival_time, departure_time, arrival_seconds, departure_seconds)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+				ON CONFLICT (agency_id, trip_id, stop_sequence) DO UPDATE
+				SET stop_id = EXCLUDED.stop_id,
+				    arrival_time = EXCLUDED.arrival_time,
+				    departure_time = EXCLUDED.departure_time,
+				    arrival_seconds = EXCLUDED.arrival_seconds,
+				    departure_seconds = EXCLUDED.departure_seconds
+			`, st.TripID, agencyID, st.StopID, st.StopSequence,
+				st.ArrivalTime, st.DepartureTime, arrSec, depSec)
+
+			if batch.Len() >= 1000 {
+				results := tx.SendBatch(ctx, batch)
+				for i := 0; i < batch.Len(); i++ {
+					if _, err := results.Exec(); err != nil {
+						results.Close()
+						tx.Rollback(ctx)
+						return fmt.Errorf("failed to insert stop_time batch: %w", err)
+					}
+				}
+				results.Close()
+				batch = &pgx.Batch{}
+			}
+		}
+
+		if batch.Len() > 0 {
+			results := tx.SendBatch(ctx, batch)
+			for i := 0; i < batch.Len(); i++ {
+				if _, err := results.Exec(); err != nil {
+					results.Close()
+					tx.Rollback(ctx)
+					return fmt.Errorf("failed to insert stop_time final batch: %w", err)
+				}
+			}
+			results.Close()
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("failed to commit stop_times chunk at %d: %w", start, err)
+		}
+
+		log.Printf("  Imported stop_times %d-%d / %d", start+1, end, total)
+	}
+
+	log.Printf("Imported %d stop_times total", total)
+	return nil
+}
+
+func importCalendar(ctx context.Context, tx pgx.Tx, agencyID string, calendars []models.GTFSCalendar) error {
+	if len(calendars) == 0 {
+		log.Println("No calendar entries to import")
+		return nil
+	}
+
+	batch := &pgx.Batch{}
+
+	for _, cal := range calendars {
+		startDate := parseGTFSDate(cal.StartDate)
+		endDate := parseGTFSDate(cal.EndDate)
+
+		batch.Queue(`
+			INSERT INTO calendar (service_id, agency_id, monday, tuesday, wednesday,
+				thursday, friday, saturday, sunday, start_date, end_date)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			ON CONFLICT (agency_id, service_id) DO UPDATE
+			SET monday = EXCLUDED.monday, tuesday = EXCLUDED.tuesday,
+			    wednesday = EXCLUDED.wednesday, thursday = EXCLUDED.thursday,
+			    friday = EXCLUDED.friday, saturday = EXCLUDED.saturday,
+			    sunday = EXCLUDED.sunday, start_date = EXCLUDED.start_date,
+			    end_date = EXCLUDED.end_date
+		`, cal.ServiceID, agencyID,
+			cal.Monday, cal.Tuesday, cal.Wednesday, cal.Thursday,
+			cal.Friday, cal.Saturday, cal.Sunday, startDate, endDate)
+	}
+
+	results := tx.SendBatch(ctx, batch)
+	defer results.Close()
+
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := results.Exec(); err != nil {
+			return fmt.Errorf("failed to insert calendar %d: %w", i, err)
+		}
+	}
+
+	log.Printf("Imported %d calendar entries", len(calendars))
+	return nil
+}
+
+func importCalendarDates(ctx context.Context, tx pgx.Tx, agencyID string, calDates []models.GTFSCalendarDate) error {
+	if len(calDates) == 0 {
+		log.Println("No calendar_dates to import")
+		return nil
+	}
+
+	batch := &pgx.Batch{}
+
+	for _, cd := range calDates {
+		date := parseGTFSDate(cd.Date)
+
+		batch.Queue(`
+			INSERT INTO calendar_date (service_id, agency_id, date, exception_type)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (agency_id, service_id, date) DO UPDATE
+			SET exception_type = EXCLUDED.exception_type
+		`, cd.ServiceID, agencyID, date, cd.ExceptionType)
+	}
+
+	results := tx.SendBatch(ctx, batch)
+	defer results.Close()
+
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := results.Exec(); err != nil {
+			return fmt.Errorf("failed to insert calendar_date %d: %w", i, err)
+		}
+	}
+
+	log.Printf("Imported %d calendar_dates", len(calDates))
+	return nil
+}
+
+func parseGTFSDate(dateStr string) time.Time {
+	t, err := time.Parse("20060102", dateStr)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
