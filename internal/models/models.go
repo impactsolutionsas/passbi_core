@@ -174,6 +174,44 @@ type GTFSCalendarDate struct {
 	ExceptionType int    // 1=service added, 2=service removed
 }
 
+// Journey represents a complete Pareto-optimal itinerary from RAPTOR
+type Journey struct {
+	Legs          []Leg     `json:"legs"`
+	DepartureTime int       `json:"departure_time_secs"`
+	ArrivalTime   int       `json:"arrival_time_secs"`
+	Duration      int       `json:"duration_seconds"`
+	Transfers     int       `json:"transfers"`
+	WalkDistance  int       `json:"walk_distance_meters"`
+	Fare          *FareInfo `json:"fare,omitempty"`
+}
+
+// Leg represents one segment of a journey (walk, ride, or transfer)
+type Leg struct {
+	Type          EdgeType    `json:"type"`
+	FromStop      string      `json:"from_stop"`
+	FromStopName  string      `json:"from_stop_name"`
+	ToStop        string      `json:"to_stop"`
+	ToStopName    string      `json:"to_stop_name"`
+	Route         string      `json:"route,omitempty"`
+	RouteName     string      `json:"route_name,omitempty"`
+	Mode          TransitMode `json:"mode,omitempty"`
+	AgencyName    string      `json:"agency_name,omitempty"`
+	DepartureTime int         `json:"departure_time_secs"`
+	ArrivalTime   int         `json:"arrival_time_secs"`
+	Duration      int         `json:"duration_seconds"`
+	Distance      int         `json:"distance_meters,omitempty"`
+	NumStops      int         `json:"num_stops,omitempty"`
+	Stops         []StopInfo  `json:"stops,omitempty"`
+	TripID        string      `json:"trip_id,omitempty"`
+	WaitTime      int         `json:"wait_time_seconds,omitempty"`
+}
+
+// FareInfo represents estimated fare for a journey
+type FareInfo struct {
+	Amount   int    `json:"amount"`
+	Currency string `json:"currency"`
+}
+
 // ImportLog represents a GTFS import operation log
 type ImportLog struct {
 	ID          int64

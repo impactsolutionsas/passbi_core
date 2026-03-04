@@ -18,6 +18,7 @@ type InMemoryGraph struct {
 	Nodes     map[int64]models.Node     // nodeID -> Node
 	Edges     map[int64][]models.Edge   // fromNodeID -> []Edge
 	StopNodes map[string][]int64        // stopID -> []nodeID
+	TT        *Timetable                // RAPTOR timetable index
 	loaded    bool
 }
 
@@ -111,6 +112,12 @@ func (g *InMemoryGraph) LoadFromDB(ctx context.Context, db *pgxpool.Pool) error 
 
 	duration := time.Since(startTime)
 	log.Printf("Graph loaded in %v (%d nodes, %d edges)", duration, len(nodes), edgeCount)
+
+	// Load RAPTOR timetable
+	g.TT = NewTimetable()
+	if err := g.TT.LoadFromDB(ctx, db); err != nil {
+		log.Printf("Warning: RAPTOR timetable load failed: %v (A* fallback will be used)", err)
+	}
 
 	return nil
 }

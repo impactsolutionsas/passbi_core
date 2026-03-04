@@ -12,17 +12,52 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/passbi/passbi_core/internal/cache"
 	"github.com/passbi/passbi_core/internal/db"
+	"github.com/passbi/passbi_core/internal/graph"
 	"github.com/passbi/passbi_core/internal/models"
 	"github.com/passbi/passbi_core/internal/routing"
 )
 
 // RouteSearchResponse is the API response structure
 type RouteSearchResponse struct {
-	Routes        map[string]*RouteResult `json:"routes"`
+	Journeys      []JourneyResult         `json:"journeys,omitempty"`
+	Routes        map[string]*RouteResult `json:"routes,omitempty"`
 	DepartureTime string                  `json:"departure_time"`
+	Engine        string                  `json:"engine"`
 }
 
-// RouteResult represents a single route option
+// JourneyResult represents a RAPTOR-computed journey option
+type JourneyResult struct {
+	DepartureTime   string          `json:"departure_time"`
+	ArrivalTime     string          `json:"arrival_time"`
+	DurationSeconds int             `json:"duration_seconds"`
+	WalkDistanceM   int             `json:"walk_distance_meters"`
+	Transfers       int             `json:"transfers"`
+	Fare            *models.FareInfo `json:"fare,omitempty"`
+	Legs            []LegResult     `json:"legs"`
+}
+
+// LegResult represents one segment of a journey in the API response
+type LegResult struct {
+	Type          string          `json:"type"`
+	FromStop      string          `json:"from_stop"`
+	FromStopName  string          `json:"from_stop_name"`
+	ToStop        string          `json:"to_stop"`
+	ToStopName    string          `json:"to_stop_name"`
+	DepartureTime string          `json:"departure_time"`
+	ArrivalTime   string          `json:"arrival_time"`
+	DurationSecs  int             `json:"duration_seconds"`
+	WaitTimeSecs  int             `json:"wait_time_seconds,omitempty"`
+	DistanceM     int             `json:"distance_meters,omitempty"`
+	Route         string          `json:"route,omitempty"`
+	RouteName     string          `json:"route_name,omitempty"`
+	Mode          string          `json:"mode,omitempty"`
+	AgencyName    string          `json:"agency_name,omitempty"`
+	NumStops      int             `json:"num_stops,omitempty"`
+	Stops         []models.StopInfo `json:"stops,omitempty"`
+	TripID        string          `json:"trip_id,omitempty"`
+}
+
+// RouteResult represents a single route option (legacy A* format)
 type RouteResult struct {
 	DurationSeconds int           `json:"duration_seconds"`
 	WalkDistanceM   int           `json:"walk_distance_meters"`
@@ -32,6 +67,7 @@ type RouteResult struct {
 }
 
 // RouteSearch handles the /v2/route-search endpoint
+// Uses RAPTOR (time-dependent) as primary engine, A* as fallback
 func RouteSearch(c *fiber.Ctx) error {
 	// Parse query parameters
 	fromStr := c.Query("from")
@@ -74,8 +110,93 @@ func RouteSearch(c *fiber.Ctx) error {
 		timeStr = now.Format("15:04")
 	}
 
-	// Compute all 4 routes in parallel using in-memory graph
+	// Try RAPTOR first (time-dependent, Pareto-optimal)
+	g := graph.GetGraph()
+	if g.TT != nil && g.TT.IsLoaded() {
+		journeys, err := computeRaptorRoute(fromLat, fromLon, toLat, toLon, baseTimeSecs, g.TT)
+		if err == nil && len(journeys) > 0 {
+			return c.JSON(RouteSearchResponse{
+				Journeys:      journeys,
+				DepartureTime: timeStr,
+				Engine:        "raptor",
+			})
+		}
+		if err != nil {
+			log.Printf("RAPTOR failed, falling back to A*: %v", err)
+		}
+	}
+
+	// Fallback: A* with 4 strategies
 	ctx := c.Context()
+	routes, err := computeAStarRoutes(ctx, fromLat, fromLon, toLat, toLon, baseTimeSecs)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{
+			"error": "no routes found between the specified locations",
+		})
+	}
+
+	return c.JSON(RouteSearchResponse{
+		Routes:        routes,
+		DepartureTime: timeStr,
+		Engine:        "astar",
+	})
+}
+
+// computeRaptorRoute runs RAPTOR and formats results
+func computeRaptorRoute(fromLat, fromLon, toLat, toLon float64, depTimeSec int, tt *graph.Timetable) ([]JourneyResult, error) {
+	raptorRouter := routing.NewRaptorRouter(tt)
+	journeys, err := raptorRouter.FindJourneys(fromLat, fromLon, toLat, toLon, depTimeSec)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []JourneyResult
+	for i := range journeys {
+		j := &journeys[i]
+
+		// Estimate fare
+		j.Fare = routing.EstimateFare(j)
+
+		// Convert legs to API format
+		var legs []LegResult
+		for _, leg := range j.Legs {
+			legs = append(legs, LegResult{
+				Type:          string(leg.Type),
+				FromStop:      leg.FromStop,
+				FromStopName:  leg.FromStopName,
+				ToStop:        leg.ToStop,
+				ToStopName:    leg.ToStopName,
+				DepartureTime: formatSecondsToTime(leg.DepartureTime),
+				ArrivalTime:   formatSecondsToTime(leg.ArrivalTime),
+				DurationSecs:  leg.Duration,
+				WaitTimeSecs:  leg.WaitTime,
+				DistanceM:     leg.Distance,
+				Route:         leg.Route,
+				RouteName:     leg.RouteName,
+				Mode:          string(leg.Mode),
+				AgencyName:    leg.AgencyName,
+				NumStops:      leg.NumStops,
+				Stops:         leg.Stops,
+				TripID:        leg.TripID,
+			})
+		}
+
+		results = append(results, JourneyResult{
+			DepartureTime:   formatSecondsToTime(j.DepartureTime),
+			ArrivalTime:     formatSecondsToTime(j.ArrivalTime),
+			DurationSeconds: j.Duration,
+			WalkDistanceM:   j.WalkDistance,
+			Transfers:       j.Transfers,
+			Fare:            j.Fare,
+			Legs:            legs,
+		})
+	}
+
+	return results, nil
+}
+
+// computeAStarRoutes runs the legacy A* 4-strategy computation
+func computeAStarRoutes(ctx context.Context, fromLat, fromLon, toLat, toLon float64, baseTimeSecs int) (map[string]*RouteResult, error) {
 	strategies := routing.GetAllStrategies()
 
 	type routeResult struct {
@@ -100,25 +221,20 @@ func RouteSearch(c *fiber.Ctx) error {
 		}(strategy)
 	}
 
-	// Wait for all goroutines to complete
 	go func() {
 		wg.Wait()
 		close(resultChan)
 	}()
 
-	// Collect results
 	routes := make(map[string]*RouteResult)
 	for result := range resultChan {
 		if result.err != nil {
 			log.Printf("Route computation failed for strategy %s: %v", result.strategy, result.err)
-			// Still continue with other strategies
 			continue
 		}
-
 		if result.path != nil {
 			enrichStepsWithTimes(result.path.Steps, baseTimeSecs)
 			arrivalSecs := baseTimeSecs + result.path.TotalTime
-
 			routes[result.strategy] = &RouteResult{
 				DurationSeconds: result.path.TotalTime,
 				WalkDistanceM:   result.path.TotalWalk,
@@ -129,17 +245,11 @@ func RouteSearch(c *fiber.Ctx) error {
 		}
 	}
 
-	// Check if we got at least one route
 	if len(routes) == 0 {
-		return c.Status(404).JSON(fiber.Map{
-			"error": "no routes found between the specified locations",
-		})
+		return nil, fmt.Errorf("no routes found")
 	}
 
-	return c.JSON(RouteSearchResponse{
-		Routes:        routes,
-		DepartureTime: timeStr,
-	})
+	return routes, nil
 }
 
 // computeRoute computes a route with caching
