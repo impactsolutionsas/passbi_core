@@ -218,20 +218,22 @@ func (b *Builder) clearGraph(ctx context.Context) error {
 func (b *Builder) buildNodesFromDB(ctx context.Context) (int, error) {
 	log.Println("Building nodes from database...")
 
-	// Get all unique (stop_id, route_id, lat, lon) combinations
-	// This ensures we have nodes for all stop × route pairs
+	// Get all unique (stop_id, route_id, mode, lat, lon) combinations
+	// Uses agency_id for correct multi-agency join
 	query := `
-		INSERT INTO node (stop_id, route_id, lat, lon)
+		INSERT INTO node (stop_id, route_id, mode, lat, lon)
 		SELECT DISTINCT
 			st.stop_id,
 			t.route_id,
+			r.mode,
 			s.lat,
 			s.lon
 		FROM stop_time st
-		JOIN trip t ON st.trip_id = t.trip_id
-		JOIN stop s ON st.stop_id = s.stop_id
+		JOIN trip t ON st.trip_id = t.trip_id AND st.agency_id = t.agency_id
+		JOIN stop s ON st.stop_id = s.id
+		JOIN route r ON t.route_id = r.id
 		WHERE s.lat IS NOT NULL AND s.lon IS NOT NULL
-		ON CONFLICT (stop_id, route_id) DO NOTHING
+		ON CONFLICT (stop_id, route_id) DO UPDATE SET mode = EXCLUDED.mode
 	`
 
 	result, err := b.db.Exec(ctx, query)
@@ -277,7 +279,8 @@ func (b *Builder) buildEdgesFromDB(ctx context.Context) (int, error) {
 func (b *Builder) buildRideEdgesFromDB(ctx context.Context) (int, error) {
 	log.Println("Building RIDE edges from database...")
 
-	// Create edges between consecutive stops on each trip
+	// Create edges between consecutive stops on each trip.
+	// Uses LATERAL + ORDER BY to handle non-contiguous stop_sequences (e.g. 1,3,5).
 	query := `
 		INSERT INTO edge (from_node_id, to_node_id, type, cost_time, cost_walk, cost_transfer, trip_id, sequence)
 		SELECT
@@ -286,8 +289,9 @@ func (b *Builder) buildRideEdgesFromDB(ctx context.Context) (int, error) {
 			'RIDE' as type,
 			GREATEST(
 				CASE
-					WHEN st1.departure_time IS NOT NULL AND st2.arrival_time IS NOT NULL
-					THEN EXTRACT(EPOCH FROM (st2.arrival_time::time - st1.departure_time::time))::INT
+					WHEN st1.departure_seconds IS NOT NULL AND st2.arrival_seconds IS NOT NULL
+						AND st2.arrival_seconds > st1.departure_seconds
+					THEN st2.arrival_seconds - st1.departure_seconds
 					ELSE 300
 				END,
 				60
@@ -297,8 +301,16 @@ func (b *Builder) buildRideEdgesFromDB(ctx context.Context) (int, error) {
 			st1.trip_id,
 			st1.stop_sequence as sequence
 		FROM stop_time st1
-		JOIN stop_time st2 ON st1.trip_id = st2.trip_id AND st2.stop_sequence = st1.stop_sequence + 1
-		JOIN trip t ON st1.trip_id = t.trip_id
+		CROSS JOIN LATERAL (
+			SELECT st2.stop_id, st2.arrival_seconds, st2.stop_sequence
+			FROM stop_time st2
+			WHERE st2.trip_id = st1.trip_id
+			  AND st2.agency_id = st1.agency_id
+			  AND st2.stop_sequence > st1.stop_sequence
+			ORDER BY st2.stop_sequence
+			LIMIT 1
+		) st2
+		JOIN trip t ON st1.trip_id = t.trip_id AND st1.agency_id = t.agency_id
 		JOIN node n1 ON n1.stop_id = st1.stop_id AND n1.route_id = t.route_id
 		JOIN node n2 ON n2.stop_id = st2.stop_id AND n2.route_id = t.route_id
 		ON CONFLICT DO NOTHING

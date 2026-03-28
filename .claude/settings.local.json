@@ -93,7 +93,18 @@
       "Bash(SUPABASE_PASSWORD=I9YyF1jg7XBuxRrQ ./scripts/setup-supabase.sh:*)",
       "Bash(./scripts/import-gtfs-to-supabase.sh:*)",
       "Bash(go clean:*)",
-      "Bash(gh api:*)"
+      "Bash(gh api:*)",
+      "Bash(cd /Users/macpro/iCloud Drive \\\\\\(Archive\\\\\\)/Desktop/PASSBI-DEVLAND/passbi_core)",
+      "Bash(cat -A \"/Users/macpro/iCloud Drive \\(Archive\\)/Desktop/PASSBI-DEVLAND/passbi_core/internal/routing/raptor.go\")",
+      "Bash(xxd)",
+      "Bash(head -20 \"/Users/macpro/iCloud Drive \\(Archive\\)/Desktop/PASSBI-DEVLAND/passbi_core/internal/routing/raptor.go\")",
+      "Bash(grep -A 10 \"func haversineDistance\" \"/Users/macpro/iCloud Drive \\(Archive\\)/Desktop/PASSBI-DEVLAND/passbi_core/internal/routing/\"*.go)",
+      "Bash(tail -20 \"/Users/macpro/iCloud Drive \\(Archive\\)/Desktop/PASSBI-DEVLAND/passbi_core/internal/routing/raptor.go\")",
+      "Bash(find \"/Users/macpro/iCloud Drive \\(Archive\\)/Desktop/PASSBI-DEVLAND/passbi_core\" -name \"raptor.go\" -type f)",
+      "Bash(grep \"\\\\.go$\")",
+      "Bash(find \"/Users/macpro/iCloud Drive \\(Archive\\)/Desktop/PASSBI-DEVLAND/passbi_core\" -name \"*.sql\" -o -name \"*.csv\")",
+      "Bash(head -1 \"/Users/macpro/iCloud Drive \\(Archive\\)/Desktop/PASSBI-DEVLAND/passbi_core/internal/routing/raptor.go\")",
+      "WebFetch(domain:localhost)"
     ],
     "additionalDirectories": [
       "/Users/macpro/Desktop/PASSBI-DEVLAND/passbi_core/docs/api"

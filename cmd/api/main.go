@@ -56,7 +56,9 @@ func main() {
 	})
 
 	// Middleware
-	app.Use(recover.New())
+	app.Use(recover.New(recover.Config{
+		EnableStackTrace: true,
+	}))
 	app.Use(logger.New(logger.Config{
 		Format:     "${time} | ${status} | ${latency} | ${method} ${path}\n",
 		TimeFormat: "15:04:05",
