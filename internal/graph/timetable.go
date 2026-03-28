@@ -86,6 +86,11 @@ func (tt *Timetable) IsLoaded() bool {
 	return tt.loaded && len(tt.StopIDs) > 0 && len(tt.Trips) > 0
 }
 
+// MarkLoaded sets the loaded flag (for testing without a database)
+func (tt *Timetable) MarkLoaded() {
+	tt.loaded = true
+}
+
 // LoadFromDB loads the timetable from PostgreSQL for RAPTOR routing
 func (tt *Timetable) LoadFromDB(ctx context.Context, db *pgxpool.Pool) error {
 	startTime := time.Now()
@@ -137,13 +142,9 @@ func (tt *Timetable) loadActiveServices(ctx context.Context, db *pgxpool.Pool) e
 		time.Friday: "friday", time.Saturday: "saturday",
 	}[dayOfWeek]
 
-	// Get services active by calendar
-	query := fmt.Sprintf(`
-		SELECT service_id FROM calendar
-		WHERE %s = true AND start_date <= $1 AND end_date >= $1
-	`, dayCol)
-
-	rows, err := db.Query(ctx, query, dateStr)
+	// Load services matching today's DOW within valid date range
+	dowQuery := fmt.Sprintf(`SELECT service_id FROM calendar WHERE %s = true AND start_date <= $1 AND end_date >= $1`, dayCol)
+	rows, err := db.Query(ctx, dowQuery, dateStr)
 	if err != nil {
 		return err
 	}
@@ -157,34 +158,56 @@ func (tt *Timetable) loadActiveServices(ctx context.Context, db *pgxpool.Pool) e
 		tt.ActiveServices[sid] = true
 	}
 
-	// Apply calendar_dates exceptions
+	// Include services added today via calendar_dates (exception_type=1)
 	exRows, err := db.Query(ctx, `
-		SELECT service_id, exception_type FROM calendar_date WHERE date = $1
+		SELECT service_id FROM calendar_date
+		WHERE exception_type = 1 AND date = $1
 	`, dateStr)
-	if err != nil {
-		return err
-	}
-	defer exRows.Close()
-
-	for exRows.Next() {
-		var sid string
-		var exType int
-		if err := exRows.Scan(&sid, &exType); err != nil {
-			continue
-		}
-		if exType == 1 {
-			tt.ActiveServices[sid] = true // added
-		} else if exType == 2 {
-			delete(tt.ActiveServices, sid) // removed
+	if err == nil {
+		defer exRows.Close()
+		for exRows.Next() {
+			var sid string
+			if err := exRows.Scan(&sid); err != nil {
+				continue
+			}
+			tt.ActiveServices[sid] = true
 		}
 	}
 
-	log.Printf("  Active services today (%s): %d", dateStr, len(tt.ActiveServices))
-
-	// If no calendar data, treat all services as active
-	if len(tt.ActiveServices) == 0 {
-		log.Println("  Warning: no active services found, will use all trips")
+	// Remove services explicitly excluded today (exception_type=2)
+	rmRows, err := db.Query(ctx, `
+		SELECT service_id FROM calendar_date
+		WHERE exception_type = 2 AND date = $1
+	`, dateStr)
+	if err == nil {
+		defer rmRows.Close()
+		for rmRows.Next() {
+			var sid string
+			if err := rmRows.Scan(&sid); err != nil {
+				continue
+			}
+			delete(tt.ActiveServices, sid)
+		}
 	}
+
+	// Services with no calendar at all → active by default (BRT, etc.)
+	orphanRows, err := db.Query(ctx, `
+		SELECT DISTINCT t.service_id FROM trip t
+		WHERE NOT EXISTS (SELECT 1 FROM calendar c WHERE c.service_id = t.service_id)
+		  AND NOT EXISTS (SELECT 1 FROM calendar_date cd WHERE cd.service_id = t.service_id)
+	`)
+	if err == nil {
+		defer orphanRows.Close()
+		for orphanRows.Next() {
+			var sid string
+			if err := orphanRows.Scan(&sid); err != nil {
+				continue
+			}
+			tt.ActiveServices[sid] = true
+		}
+	}
+
+	log.Printf("  Active services today (%s, %s): %d", dateStr, dayCol, len(tt.ActiveServices))
 
 	return nil
 }
@@ -320,7 +343,9 @@ func (tt *Timetable) loadTripsAndStopTimes(ctx context.Context, db *pgxpool.Pool
 			continue
 		}
 
-		// Find the canonical stop pattern (longest trip)
+		// Build canonical stop pattern as the union of all trips' stops.
+		// Use the longest trip as the backbone, then insert stops from other
+		// trips (short-turn, express variants) at their correct positions.
 		var longestTrip rawTrip
 		for _, t := range trips {
 			if len(t.stopTimes) > len(longestTrip.stopTimes) {
@@ -328,16 +353,56 @@ func (tt *Timetable) loadTripsAndStopTimes(ctx context.Context, db *pgxpool.Pool
 			}
 		}
 
-		// Build RouteStops for this route
-		stopPattern := make([]int, 0, len(longestTrip.stopTimes))
-		stopPosMap := make(map[string]int) // stopID → position in pattern
-		for i, st := range longestTrip.stopTimes {
-			sIdx, ok := tt.StopIndex[st.stopID]
-			if !ok {
+		// Start with the longest trip's stop order
+		stopPosMap := make(map[string]int) // stopID → position in merged pattern
+		orderedStops := make([]string, 0, len(longestTrip.stopTimes))
+		for _, st := range longestTrip.stopTimes {
+			if _, exists := tt.StopIndex[st.stopID]; !exists {
 				continue
 			}
+			if _, dup := stopPosMap[st.stopID]; dup {
+				continue
+			}
+			stopPosMap[st.stopID] = len(orderedStops)
+			orderedStops = append(orderedStops, st.stopID)
+		}
+
+		// Merge stops from other trips that are missing from the backbone
+		for _, t := range trips {
+			if t.tripID == longestTrip.tripID && t.routeID == longestTrip.routeID {
+				continue
+			}
+			for i, st := range t.stopTimes {
+				if _, exists := tt.StopIndex[st.stopID]; !exists {
+					continue
+				}
+				if _, already := stopPosMap[st.stopID]; already {
+					continue
+				}
+				// Find insertion point: after the last known predecessor
+				insertPos := len(orderedStops) // default: append at end
+				for j := i - 1; j >= 0; j-- {
+					if pos, ok := stopPosMap[t.stopTimes[j].stopID]; ok {
+						insertPos = pos + 1
+						break
+					}
+				}
+				// Insert into orderedStops at insertPos
+				orderedStops = append(orderedStops, "")
+				copy(orderedStops[insertPos+1:], orderedStops[insertPos:])
+				orderedStops[insertPos] = st.stopID
+				// Rebuild positions from insertPos onward
+				for k := insertPos; k < len(orderedStops); k++ {
+					stopPosMap[orderedStops[k]] = k
+				}
+			}
+		}
+
+		// Build the final RouteStops from the merged order
+		stopPattern := make([]int, 0, len(orderedStops))
+		for _, sid := range orderedStops {
+			sIdx := tt.StopIndex[sid]
 			stopPattern = append(stopPattern, sIdx)
-			stopPosMap[st.stopID] = i
 		}
 		tt.RouteStops[rIdx] = stopPattern
 
@@ -350,28 +415,45 @@ func (tt *Timetable) loadTripsAndStopTimes(ctx context.Context, db *pgxpool.Pool
 				continue
 			}
 
-			// Build StopTimeEntries
-			stEntries := make([]StopTimeEntry, 0, len(trip.stopTimes))
+			// Build StopTimeEntries aligned to route's canonical stop pattern.
+			// Each position corresponds to the same position in RouteStops.
+			patternLen := len(stopPattern)
+			stEntries := make([]StopTimeEntry, patternLen)
+			filled := 0
 			for _, st := range trip.stopTimes {
 				sIdx, ok := tt.StopIndex[st.stopID]
 				if !ok {
 					continue
 				}
-				stEntries = append(stEntries, StopTimeEntry{
+				pos, ok := stopPosMap[st.stopID]
+				if !ok || pos >= patternLen {
+					continue
+				}
+				stEntries[pos] = StopTimeEntry{
 					ArrivalSec:   st.arrSec,
 					DepartureSec: st.depSec,
 					StopIdx:      sIdx,
-				})
+				}
+				filled++
 			}
 
-			if len(stEntries) < 2 {
+			if filled < 2 {
 				continue
+			}
+
+			// Find the first non-zero departure for binary search
+			firstDep := 0
+			for _, ste := range stEntries {
+				if ste.DepartureSec > 0 {
+					firstDep = ste.DepartureSec
+					break
+				}
 			}
 
 			entry := TripEntry{
 				TripID:            trip.tripID,
 				ServiceID:         trip.serviceID,
-				FirstDepartureSec: stEntries[0].DepartureSec,
+				FirstDepartureSec: firstDep,
 				GlobalTripIdx:     globalTripIdx,
 			}
 			tt.Trips[rIdx] = append(tt.Trips[rIdx], entry)
@@ -493,6 +575,10 @@ func (tt *Timetable) EarliestTrip(routeIdx, stopPos, depSec int) (*TripEntry, in
 		trip := &trips[i]
 		stTimes := tt.StopTimes[trip.GlobalTripIdx]
 		if stopPos >= len(stTimes) {
+			continue
+		}
+		// Skip stops not served by this trip (empty slot in aligned array)
+		if stTimes[stopPos].DepartureSec == 0 && stTimes[stopPos].ArrivalSec == 0 {
 			continue
 		}
 		if stTimes[stopPos].DepartureSec >= depSec {

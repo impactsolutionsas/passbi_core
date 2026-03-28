@@ -17,12 +17,11 @@ import (
 	"github.com/passbi/passbi_core/internal/routing"
 )
 
-// RouteSearchResponse is the API response structure
+// RouteSearchResponse is the API response structure (unified format)
 type RouteSearchResponse struct {
-	Journeys      []JourneyResult         `json:"journeys,omitempty"`
-	Routes        map[string]*RouteResult `json:"routes,omitempty"`
-	DepartureTime string                  `json:"departure_time"`
-	Engine        string                  `json:"engine"`
+	Journeys      []JourneyResult `json:"journeys"`
+	DepartureTime string          `json:"departure_time"`
+	Engine        string          `json:"engine"`
 }
 
 // JourneyResult represents a RAPTOR-computed journey option
@@ -55,15 +54,6 @@ type LegResult struct {
 	NumStops      int             `json:"num_stops,omitempty"`
 	Stops         []models.StopInfo `json:"stops,omitempty"`
 	TripID        string          `json:"trip_id,omitempty"`
-}
-
-// RouteResult represents a single route option (legacy A* format)
-type RouteResult struct {
-	DurationSeconds int           `json:"duration_seconds"`
-	WalkDistanceM   int           `json:"walk_distance_meters"`
-	Transfers       int           `json:"transfers"`
-	ArrivalTime     string        `json:"arrival_time"`
-	Steps           []models.Step `json:"steps"`
 }
 
 // RouteSearch handles the /v2/route-search endpoint
@@ -110,25 +100,49 @@ func RouteSearch(c *fiber.Ctx) error {
 		timeStr = now.Format("15:04")
 	}
 
-	// Try RAPTOR first (time-dependent, Pareto-optimal)
+	// Engine selection: ?engine=raptor|astar (default: raptor with astar fallback)
+	engineParam := strings.ToLower(c.Query("engine"))
+	// Accept common aliases
+	if engineParam == "a*" || engineParam == "astra" || engineParam == "a-star" {
+		engineParam = "astar"
+	}
+	if engineParam != "" && engineParam != "raptor" && engineParam != "astar" {
+		return c.Status(400).JSON(fiber.Map{
+			"error": fmt.Sprintf("unknown engine %q, use 'raptor' or 'astar'", engineParam),
+		})
+	}
 	g := graph.GetGraph()
-	if g.TT != nil && g.TT.IsLoaded() {
-		journeys, err := computeRaptorRoute(fromLat, fromLon, toLat, toLon, baseTimeSecs, g.TT)
-		if err == nil && len(journeys) > 0 {
-			return c.JSON(RouteSearchResponse{
-				Journeys:      journeys,
-				DepartureTime: timeStr,
-				Engine:        "raptor",
+
+	if engineParam != "astar" {
+		// Try RAPTOR (time-dependent, Pareto-optimal)
+		if g.TT != nil && g.TT.IsLoaded() {
+			journeys, err := computeRaptorRoute(fromLat, fromLon, toLat, toLon, baseTimeSecs, g.TT)
+			if err == nil && len(journeys) > 0 {
+				return c.JSON(RouteSearchResponse{
+					Journeys:      journeys,
+					DepartureTime: timeStr,
+					Engine:        "raptor",
+				})
+			}
+			if err != nil {
+				log.Printf("RAPTOR failed: %v", err)
+			}
+			// If engine explicitly set to raptor, don't fallback
+			if engineParam == "raptor" {
+				return c.Status(404).JSON(fiber.Map{
+					"error": "no journeys found (raptor)",
+				})
+			}
+		} else if engineParam == "raptor" {
+			return c.Status(503).JSON(fiber.Map{
+				"error": "raptor engine not available (timetable not loaded)",
 			})
-		}
-		if err != nil {
-			log.Printf("RAPTOR failed, falling back to A*: %v", err)
 		}
 	}
 
-	// Fallback: A* with 4 strategies
+	// A* engine — results converted to unified journey format
 	ctx := c.Context()
-	routes, err := computeAStarRoutes(ctx, fromLat, fromLon, toLat, toLon, baseTimeSecs)
+	journeys, err := computeAStarJourneys(ctx, fromLat, fromLon, toLat, toLon, baseTimeSecs)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{
 			"error": "no routes found between the specified locations",
@@ -136,7 +150,7 @@ func RouteSearch(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(RouteSearchResponse{
-		Routes:        routes,
+		Journeys:      journeys,
 		DepartureTime: timeStr,
 		Engine:        "astar",
 	})
@@ -195,17 +209,17 @@ func computeRaptorRoute(fromLat, fromLon, toLat, toLon float64, depTimeSec int, 
 	return results, nil
 }
 
-// computeAStarRoutes runs the legacy A* 4-strategy computation
-func computeAStarRoutes(ctx context.Context, fromLat, fromLon, toLat, toLon float64, baseTimeSecs int) (map[string]*RouteResult, error) {
+// computeAStarJourneys runs A* strategies and converts to the unified journey format
+func computeAStarJourneys(ctx context.Context, fromLat, fromLon, toLat, toLon float64, baseTimeSecs int) ([]JourneyResult, error) {
 	strategies := routing.GetAllStrategies()
 
-	type routeResult struct {
+	type stratResult struct {
 		strategy string
 		path     *models.Path
 		err      error
 	}
 
-	resultChan := make(chan routeResult, len(strategies))
+	resultChan := make(chan stratResult, len(strategies))
 	var wg sync.WaitGroup
 
 	for _, strategy := range strategies {
@@ -213,7 +227,7 @@ func computeAStarRoutes(ctx context.Context, fromLat, fromLon, toLat, toLon floa
 		go func(strat routing.Strategy) {
 			defer wg.Done()
 			path, err := computeRoute(ctx, fromLat, fromLon, toLat, toLon, strat)
-			resultChan <- routeResult{
+			resultChan <- stratResult{
 				strategy: strat.Name(),
 				path:     path,
 				err:      err,
@@ -226,30 +240,56 @@ func computeAStarRoutes(ctx context.Context, fromLat, fromLon, toLat, toLon floa
 		close(resultChan)
 	}()
 
-	routes := make(map[string]*RouteResult)
+	var journeys []JourneyResult
 	for result := range resultChan {
 		if result.err != nil {
 			log.Printf("Route computation failed for strategy %s: %v", result.strategy, result.err)
 			continue
 		}
-		if result.path != nil {
-			enrichStepsWithTimes(result.path.Steps, baseTimeSecs)
-			arrivalSecs := baseTimeSecs + result.path.TotalTime
-			routes[result.strategy] = &RouteResult{
-				DurationSeconds: result.path.TotalTime,
-				WalkDistanceM:   result.path.TotalWalk,
-				Transfers:       result.path.Transfers,
-				ArrivalTime:     formatSecondsToTime(arrivalSecs),
-				Steps:           result.path.Steps,
-			}
+		if result.path == nil {
+			continue
 		}
+
+		enrichStepsWithTimes(result.path.Steps, baseTimeSecs)
+		arrivalSecs := baseTimeSecs + result.path.TotalTime
+
+		// Convert steps to legs
+		var legs []LegResult
+		for _, step := range result.path.Steps {
+			legs = append(legs, LegResult{
+				Type:          string(step.Type),
+				FromStop:      step.FromStop,
+				FromStopName:  step.FromStopName,
+				ToStop:        step.ToStop,
+				ToStopName:    step.ToStopName,
+				DepartureTime: step.DepartureTime,
+				ArrivalTime:   step.ArrivalTime,
+				DurationSecs:  step.Duration,
+				DistanceM:     step.Distance,
+				Route:         step.Route,
+				RouteName:     step.RouteName,
+				Mode:          string(step.Mode),
+				AgencyName:    step.AgencyName,
+				NumStops:      step.NumStops,
+				Stops:         step.Stops,
+			})
+		}
+
+		journeys = append(journeys, JourneyResult{
+			DepartureTime:   formatSecondsToTime(baseTimeSecs),
+			ArrivalTime:     formatSecondsToTime(arrivalSecs),
+			DurationSeconds: result.path.TotalTime,
+			WalkDistanceM:   result.path.TotalWalk,
+			Transfers:       result.path.Transfers,
+			Legs:            legs,
+		})
 	}
 
-	if len(routes) == 0 {
+	if len(journeys) == 0 {
 		return nil, fmt.Errorf("no routes found")
 	}
 
-	return routes, nil
+	return journeys, nil
 }
 
 // computeRoute computes a route with caching

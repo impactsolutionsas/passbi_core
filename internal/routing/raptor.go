@@ -2,6 +2,7 @@ package routing
 
 import (
 	"fmt"
+	"log"
 	"math"
 
 	"github.com/passbi/passbi_core/internal/graph"
@@ -56,6 +57,17 @@ func (r *RaptorRouter) FindJourneys(fromLat, fromLon, toLat, toLon float64, depa
 	destStops := tt.FindNearestStops(toLat, toLon, maxWalkDistanceM, maxNearbyStops)
 	if len(destStops) == 0 {
 		return nil, fmt.Errorf("no stops found near destination")
+	}
+
+	// DEBUG: log origin/dest stops and their routes
+	log.Printf("[RAPTOR] depTime=%d (%02d:%02d), originStops=%d, destStops=%d",
+		departureTimeSec, departureTimeSec/3600, (departureTimeSec%3600)/60,
+		len(originStops), len(destStops))
+	for _, sIdx := range originStops {
+		log.Printf("[RAPTOR]   origin stop %d %q routes=%d", sIdx, tt.StopIDs[sIdx], len(tt.StopRoutes[sIdx]))
+	}
+	for _, sIdx := range destStops {
+		log.Printf("[RAPTOR]   dest stop %d %q routes=%d", sIdx, tt.StopIDs[sIdx], len(tt.StopRoutes[sIdx]))
 	}
 
 	destSet := make(map[int]bool, len(destStops))
@@ -130,11 +142,21 @@ func (r *RaptorRouter) FindJourneys(fromLat, fromLon, toLat, toLon float64, depa
 		// Clear marks for next round
 		newMarked := make([]bool, numStops)
 
+		// DEBUG: log round info
+		log.Printf("[RAPTOR] Round %d: routesToScan=%d", k, len(routesToScan))
+
 		// Scan each route
 		for routeIdx, startPos := range routesToScan {
 			routeStops := tt.RouteStops[routeIdx]
 			if len(routeStops) == 0 {
 				continue
+			}
+
+			// DEBUG: log route scan details (only round 0)
+			if k == 0 {
+				nTrips := len(tt.Trips[routeIdx])
+				log.Printf("[RAPTOR]   scanning route %d %q stops=%d trips=%d startPos=%d",
+					routeIdx, tt.RouteIDs[routeIdx], len(routeStops), nTrips, startPos)
 			}
 
 			// Walk along the route from startPos
@@ -153,12 +175,32 @@ func (r *RaptorRouter) FindJourneys(fromLat, fromLon, toLat, toLon float64, depa
 						depNeeded = max(depNeeded, tau[k][sIdx]+minTransferTimeSec)
 					}
 					trip, tripIdx := tt.EarliestTrip(routeIdx, pos, depNeeded)
+					// DEBUG: log EarliestTrip result (only round 0)
+					if k == 0 {
+						if trip == nil {
+							log.Printf("[RAPTOR]     pos=%d stop=%q depNeeded=%d (%02d:%02d) -> NO TRIP",
+								pos, tt.StopIDs[sIdx], depNeeded, depNeeded/3600, (depNeeded%3600)/60)
+						} else {
+							st := tt.StopTimes[trip.GlobalTripIdx]
+							depAt := 0
+							if pos < len(st) {
+								depAt = st[pos].DepartureSec
+							}
+							log.Printf("[RAPTOR]     pos=%d stop=%q depNeeded=%d -> trip %q dep=%d (%02d:%02d) stLen=%d",
+								pos, tt.StopIDs[sIdx], depNeeded, trip.TripID, depAt, depAt/3600, (depAt%3600)/60, len(st))
+						}
+					}
 					if trip != nil {
 						if currentTrip == nil || tripIdx != currentTripIdx {
 							// Board this trip (it's earlier or we had no trip)
 							stTimes := tt.StopTimes[trip.GlobalTripIdx]
 							if pos < len(stTimes) && stTimes[pos].DepartureSec >= depNeeded {
-								if currentTrip == nil || stTimes[pos].DepartureSec < tt.StopTimes[currentTripIdx][pos].DepartureSec {
+								better := currentTrip == nil
+								if !better {
+									curStTimes := tt.StopTimes[currentTripIdx]
+									better = pos >= len(curStTimes) || stTimes[pos].DepartureSec < curStTimes[pos].DepartureSec
+								}
+								if better {
 									currentTrip = trip
 									currentTripIdx = trip.GlobalTripIdx
 									boardStopIdx = sIdx
@@ -172,8 +214,12 @@ func (r *RaptorRouter) FindJourneys(fromLat, fromLon, toLat, toLon float64, depa
 				// If we're on a trip, check if alighting here improves arrival
 				if currentTrip != nil && currentTripIdx >= 0 {
 					stTimes := tt.StopTimes[currentTripIdx]
-					if pos < len(stTimes) {
+					if pos < len(stTimes) && stTimes[pos].ArrivalSec > 0 {
 						arrTime := stTimes[pos].ArrivalSec
+						// Reject invalid times: arrival must be >= boarding departure
+						if boardPos < len(stTimes) && arrTime < stTimes[boardPos].DepartureSec {
+							continue
+						}
 						if arrTime < tau[k+1][sIdx] && arrTime < bestOverall[sIdx] {
 							tau[k+1][sIdx] = arrTime
 							bestOverall[sIdx] = arrTime
@@ -199,6 +245,10 @@ func (r *RaptorRouter) FindJourneys(fromLat, fromLon, toLat, toLon float64, depa
 			}
 			for _, transfer := range tt.Transfers[sIdx] {
 				arrTime := tau[k+1][sIdx] + transfer.WalkTimeSec
+				// Skip if arrival time is before departure (data integrity)
+				if arrTime < departureTimeSec {
+					continue
+				}
 				if arrTime < tau[k+1][transfer.ToStopIdx] && arrTime < bestOverall[transfer.ToStopIdx] {
 					tau[k+1][transfer.ToStopIdx] = arrTime
 					bestOverall[transfer.ToStopIdx] = arrTime
@@ -214,6 +264,15 @@ func (r *RaptorRouter) FindJourneys(fromLat, fromLon, toLat, toLon float64, depa
 				}
 			}
 		}
+
+		// DEBUG: count marked stops
+		markedCount := 0
+		for _, m := range newMarked {
+			if m {
+				markedCount++
+			}
+		}
+		log.Printf("[RAPTOR] Round %d: marked %d stops", k, markedCount)
 
 		// Update marked set
 		marked = newMarked
@@ -247,6 +306,15 @@ func (r *RaptorRouter) FindJourneys(fromLat, fromLon, toLat, toLon float64, depa
 			walkTime := int(walkDist / 1.4)
 			totalArrival := tau[k][destIdx] + walkTime
 
+			log.Printf("[RAPTOR] dest %q round=%d tau=%d totalArr=%d depTime=%d",
+				tt.StopIDs[destIdx], k, tau[k][destIdx], totalArrival, departureTimeSec)
+
+			// Reject arrivals before departure (invalid GTFS data)
+			if totalArrival < departureTimeSec {
+				log.Printf("[RAPTOR]   REJECTED: arrival %d < departure %d", totalArrival, departureTimeSec)
+				continue
+			}
+
 			// Pareto filter: only keep if arrival is better than any previous with fewer transfers
 			if totalArrival >= bestArrival {
 				continue
@@ -255,7 +323,7 @@ func (r *RaptorRouter) FindJourneys(fromLat, fromLon, toLat, toLon float64, depa
 
 			// Reconstruct journey
 			journey := r.reconstructJourney(tt, labels, tau, k, destIdx, departureTimeSec, toLat, toLon)
-			if journey != nil {
+			if journey != nil && journey.Duration >= 0 {
 				journeys = append(journeys, *journey)
 			}
 		}
@@ -299,7 +367,7 @@ func (r *RaptorRouter) reconstructJourney(tt *graph.Timetable, labels [][]raptor
 		}
 
 		if label.isTransfer {
-			// Walk leg
+			// Walk leg (max 1 per round to prevent walk chains)
 			if label.fromStopIdx >= 0 {
 				legs = append(legs, models.Leg{
 					Type:          models.EdgeWalk,
@@ -313,10 +381,20 @@ func (r *RaptorRouter) reconstructJourney(tt *graph.Timetable, labels [][]raptor
 					Distance:      label.walkDistM,
 				})
 			}
-			// Walk doesn't consume a round — find the ride that preceded it
+			// Move to the source of the walk, but don't follow another walk
+			// in the same round (prevents infinite walk chains)
 			currentStop = label.fromStopIdx
 			if currentStop < 0 {
 				break // reached origin
+			}
+			// If the source is also a transfer in this round, skip to the ride
+			nextLabel := labels[currentRound][currentStop]
+			if nextLabel.isTransfer && nextLabel.fromStopIdx >= 0 {
+				// Collapse: jump directly to ride source
+				currentStop = nextLabel.fromStopIdx
+				if currentStop < 0 {
+					break
+				}
 			}
 			continue
 		}
