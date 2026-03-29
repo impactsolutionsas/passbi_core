@@ -13,26 +13,37 @@ import (
 	"github.com/passbi/passbi_core/internal/cache"
 	"github.com/passbi/passbi_core/internal/db"
 	"github.com/passbi/passbi_core/internal/graph"
+	"github.com/passbi/passbi_core/internal/impact"
 	"github.com/passbi/passbi_core/internal/models"
 	"github.com/passbi/passbi_core/internal/routing"
 )
 
+// NetworkImpactDTO summarizes the best journey's climate impact across all options
+type NetworkImpactDTO struct {
+	TotalCO2SavedGrams int64  `json:"total_co2_saved_grams_if_best_chosen"`
+	BestJourneyLabel   string `json:"best_journey_label"`
+	TicketIsDigital    bool   `json:"ticket_is_digital"`
+	CashAvoided        bool   `json:"cash_avoided"`
+}
+
 // RouteSearchResponse is the API response structure (unified format)
 type RouteSearchResponse struct {
-	Journeys      []JourneyResult `json:"journeys"`
-	DepartureTime string          `json:"departure_time"`
-	Engine        string          `json:"engine"`
+	Journeys      []JourneyResult  `json:"journeys"`
+	DepartureTime string           `json:"departure_time"`
+	Engine        string           `json:"engine"`
+	NetworkImpact NetworkImpactDTO `json:"network_impact"`
 }
 
 // JourneyResult represents a RAPTOR-computed journey option
 type JourneyResult struct {
-	DepartureTime   string          `json:"departure_time"`
-	ArrivalTime     string          `json:"arrival_time"`
-	DurationSeconds int             `json:"duration_seconds"`
-	WalkDistanceM   int             `json:"walk_distance_meters"`
-	Transfers       int             `json:"transfers"`
-	Fare            *models.FareInfo `json:"fare,omitempty"`
-	Legs            []LegResult     `json:"legs"`
+	DepartureTime   string               `json:"departure_time"`
+	ArrivalTime     string               `json:"arrival_time"`
+	DurationSeconds int                  `json:"duration_seconds"`
+	WalkDistanceM   int                  `json:"walk_distance_meters"`
+	Transfers       int                  `json:"transfers"`
+	Fare            *models.FareInfo     `json:"fare,omitempty"`
+	Impact          impact.JourneyImpact `json:"impact"`
+	Legs            []LegResult          `json:"legs"`
 }
 
 // LegResult represents one segment of a journey in the API response
@@ -122,6 +133,7 @@ func RouteSearch(c *fiber.Ctx) error {
 					Journeys:      journeys,
 					DepartureTime: timeStr,
 					Engine:        "raptor",
+					NetworkImpact: computeNetworkImpact(journeys),
 				})
 			}
 			if err != nil {
@@ -153,6 +165,7 @@ func RouteSearch(c *fiber.Ctx) error {
 		Journeys:      journeys,
 		DepartureTime: timeStr,
 		Engine:        "astar",
+		NetworkImpact: computeNetworkImpact(journeys),
 	})
 }
 
@@ -195,6 +208,15 @@ func computeRaptorRoute(fromLat, fromLon, toLat, toLon float64, depTimeSec int, 
 			})
 		}
 
+		impactLegs := make([]impact.Leg, len(j.Legs))
+		for i, leg := range j.Legs {
+			impactLegs[i] = impact.Leg{
+				Type:           string(leg.Type),
+				Mode:           string(leg.Mode),
+				DistanceMeters: float64(leg.Distance),
+			}
+		}
+
 		results = append(results, JourneyResult{
 			DepartureTime:   formatSecondsToTime(j.DepartureTime),
 			ArrivalTime:     formatSecondsToTime(j.ArrivalTime),
@@ -202,6 +224,7 @@ func computeRaptorRoute(fromLat, fromLon, toLat, toLon float64, depTimeSec int, 
 			WalkDistanceM:   j.WalkDistance,
 			Transfers:       j.Transfers,
 			Fare:            j.Fare,
+			Impact:          impact.Compute(impactLegs),
 			Legs:            legs,
 		})
 	}
@@ -275,12 +298,22 @@ func computeAStarJourneys(ctx context.Context, fromLat, fromLon, toLat, toLon fl
 			})
 		}
 
+		impactLegs := make([]impact.Leg, len(legs))
+		for i, leg := range legs {
+			impactLegs[i] = impact.Leg{
+				Type:           leg.Type,
+				Mode:           leg.Mode,
+				DistanceMeters: float64(leg.DistanceM),
+			}
+		}
+
 		journeys = append(journeys, JourneyResult{
 			DepartureTime:   formatSecondsToTime(baseTimeSecs),
 			ArrivalTime:     formatSecondsToTime(arrivalSecs),
 			DurationSeconds: result.path.TotalTime,
 			WalkDistanceM:   result.path.TotalWalk,
 			Transfers:       result.path.Transfers,
+			Impact:          impact.Compute(impactLegs),
 			Legs:            legs,
 		})
 	}
@@ -339,6 +372,25 @@ func computeRoute(ctx context.Context, fromLat, fromLon, toLat, toLon float64, s
 	}
 
 	return path, nil
+}
+
+// computeNetworkImpact picks the best journey (highest CO₂ saved) for the summary
+func computeNetworkImpact(journeys []JourneyResult) NetworkImpactDTO {
+	if len(journeys) == 0 {
+		return NetworkImpactDTO{}
+	}
+	best := journeys[0]
+	for _, j := range journeys {
+		if j.Impact.CO2SavedGrams > best.Impact.CO2SavedGrams {
+			best = j
+		}
+	}
+	return NetworkImpactDTO{
+		TotalCO2SavedGrams: best.Impact.CO2SavedGrams,
+		BestJourneyLabel:   best.Impact.EquivalentLabel,
+		TicketIsDigital:    true,
+		CashAvoided:        true,
+	}
 }
 
 // Health handles the /health endpoint
