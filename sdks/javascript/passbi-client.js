@@ -12,7 +12,7 @@ class PassBiClient {
      * Initialize PassBi client
      * @param {string} apiKey - Your API key (pk_live_... or pk_test_...)
      * @param {Object} options - Configuration options
-     * @param {string} options.baseURL - Base URL for API (default: https://api.passbi.com)
+     * @param {string} options.baseURL - Base URL for API (default: https://passbi-api.onrender.com)
      * @param {number} options.timeout - Request timeout in milliseconds (default: 30000)
      * @param {boolean} options.debug - Enable debug logging (default: false)
      */
@@ -26,7 +26,7 @@ class PassBiClient {
         }
 
         this.apiKey = apiKey;
-        this.baseURL = options.baseURL || 'https://api.passbi.com';
+        this.baseURL = options.baseURL || 'https://passbi-api.onrender.com';
         this.timeout = options.timeout || 30000;
         this.debug = options.debug || false;
         this.rateLimitInfo = {};

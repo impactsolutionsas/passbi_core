@@ -104,7 +104,13 @@
       "Bash(grep \"\\\\.go$\")",
       "Bash(find \"/Users/macpro/iCloud Drive \\(Archive\\)/Desktop/PASSBI-DEVLAND/passbi_core\" -name \"*.sql\" -o -name \"*.csv\")",
       "Bash(head -1 \"/Users/macpro/iCloud Drive \\(Archive\\)/Desktop/PASSBI-DEVLAND/passbi_core/internal/routing/raptor.go\")",
-      "WebFetch(domain:localhost)"
+      "WebFetch(domain:localhost)",
+      "Bash(PGPASSWORD='I9YyF1jg7XBuxRrQ' psql \"postgresql://postgres.xlvuggzprjjkzolonbuh:I9YyF1jg7XBuxRrQ@aws-1-eu-north-1.pooler.supabase.com:6543/postgres?sslmode=require\" -c \"\\\\dt\")",
+      "Bash(PGPASSWORD='I9YyF1jg7XBuxRrQ' psql \"postgresql://postgres.xlvuggzprjjkzolonbuh:I9YyF1jg7XBuxRrQ@aws-1-eu-north-1.pooler.supabase.com:6543/postgres?sslmode=require\" -c \"SELECT version FROM schema_migrations ORDER BY version;\")",
+      "Bash(PGPASSWORD='I9YyF1jg7XBuxRrQ' psql \"postgresql://postgres.xlvuggzprjjkzolonbuh:I9YyF1jg7XBuxRrQ@aws-1-eu-north-1.pooler.supabase.com:6543/postgres?sslmode=require\" -c \"SELECT * FROM schema_migrations;\")",
+      "Bash(PGPASSWORD='I9YyF1jg7XBuxRrQ' psql \"postgresql://postgres.xlvuggzprjjkzolonbuh:I9YyF1jg7XBuxRrQ@aws-1-eu-north-1.pooler.supabase.com:6543/postgres?sslmode=require\")",
+      "Bash(2>&1)",
+      "Bash(PGPASSWORD='I9YyF1jg7XBuxRrQ' psql \"postgresql://postgres.xlvuggzprjjkzolonbuh:I9YyF1jg7XBuxRrQ@aws-1-eu-north-1.pooler.supabase.com:6543/postgres?sslmode=require\" -c \"SELECT id, name, role FROM admin_user WHERE is_active = true LIMIT 3;\")"
     ],
     "additionalDirectories": [
       "/Users/macpro/Desktop/PASSBI-DEVLAND/passbi_core/docs/api"

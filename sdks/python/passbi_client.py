@@ -26,7 +26,7 @@ class PassBiClient:
     def __init__(
         self,
         api_key: str,
-        base_url: str = 'https://api.passbi.com',
+        base_url: str = 'https://passbi-api.onrender.com',
         timeout: int = 30,
         debug: bool = False
     ):
@@ -35,7 +35,7 @@ class PassBiClient:
 
         Args:
             api_key: Your API key (pk_live_... or pk_test_...)
-            base_url: Base URL for API (default: https://api.passbi.com)
+            base_url: Base URL for API (default: https://passbi-api.onrender.com)
             timeout: Request timeout in seconds (default: 30)
             debug: Enable debug logging (default: False)
 

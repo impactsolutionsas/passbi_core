@@ -119,10 +119,10 @@ func logRequest(db *pgxpool.Pool, reqLog *RequestLog) {
 
 	var fromPoint, toPoint interface{}
 	if reqLog.FromLocation != nil {
-		fromPoint = &reqLog.FromLocation
+		fromPoint = fmt.Sprintf("(%f,%f)", reqLog.FromLocation.Lat, reqLog.FromLocation.Lon)
 	}
 	if reqLog.ToLocation != nil {
-		toPoint = &reqLog.ToLocation
+		toPoint = fmt.Sprintf("(%f,%f)", reqLog.ToLocation.Lat, reqLog.ToLocation.Lon)
 	}
 
 	_, err := db.Exec(ctx, query,

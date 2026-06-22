@@ -1,4 +1,4 @@
-.PHONY: help build run test clean docker migrate import
+.PHONY: help build run test clean docker migrate import seed
 
 # Default target
 help:
@@ -12,6 +12,12 @@ help:
 	@echo "migrate-up   - Run database migrations"
 	@echo "migrate-down - Rollback database migrations"
 	@echo "import       - Import GTFS data (requires GTFS= and AGENCY= vars)"
+	@echo "seed         - Seed test admin users and partner accounts"
+
+# Seed test data
+seed:
+	@echo "Seeding test data..."
+	go run cmd/seed/main.go
 
 # Build targets
 build:
